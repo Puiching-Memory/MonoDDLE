@@ -1,6 +1,7 @@
 import os, sys
 import numpy as np
 import matplotlib.pyplot as plt
+import fire
 from lib.datasets.kitti.kitti_utils import get_objects_from_label
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,4 +58,4 @@ def get_kitti_bev_distribution(root_dir='../../data',
 
 
 if __name__ == '__main__':
-    get_kitti_bev_distribution()
+    fire.Fire(get_kitti_bev_distribution)
