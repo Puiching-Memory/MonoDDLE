@@ -24,14 +24,13 @@ uv pip install -r requirements.txt
 └── data
     └── KITTI
         ├── ImageSets [本仓库已提供]
-        └── object
-            ├── training
-            │   ├── calib (从 calib.zip 解压)
-            │   ├── image_2 (从 left_color.zip 解压)
-            │   └── label_2 (从 label_2.zip 解压)
-            └── testing
-                ├── calib
-                └── image_2
+        ├── training
+        │   ├── calib (从 calib.zip 解压)
+        │   ├── image_2 (从 left_color.zip 解压)
+        │   └── label_2 (从 label_2.zip 解压)
+        └── testing
+            ├── calib
+            └── image_2
 ```
 
 ### 训练与评估
@@ -39,12 +38,20 @@ uv pip install -r requirements.txt
 在项目根目录下运行以下命令进行训练：
 
 ```sh
-# 训练
+# 单卡训练
 python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
 
-# 如果您只想评估模型
+# 多卡训练（DDP，2 卡示例）
+export CUDA_VISIBLE_DEVICES=0,1
+torchrun --nproc_per_node=2 tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
+
+# 仅评估
 python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml --e
 ```
+
+所有产出（日志/权重/可视化/评测结果）会保存到 `runs/<时间戳>/`。
+
+默认 backbone 使用 timm（如 resnet34）。可在配置中通过 `model.backbone` 与 `model.backbone_source` 修改。
 
 训练完成后，模型将自动进行评估。
 

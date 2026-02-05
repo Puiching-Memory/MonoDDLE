@@ -82,7 +82,7 @@ def compute_heading_loss(input, target):
     heading_input = heading_input.view(-1, 24)
     heading_target_cls = target['heading_bin'].view(-1)
     heading_target_res = target['heading_res'].view(-1)
-    mask = target['mask_2d'].view(-1)
+    mask = target['mask_2d'].view(-1).bool()
 
     # classification loss
     heading_input_cls = heading_input[:, 0:12]
@@ -105,10 +105,10 @@ def compute_heading_loss(input, target):
 
 def extract_input_from_tensor(input, ind, mask):
     input = _transpose_and_gather_feat(input, ind)  # B*C*H*W --> B*K*C
-    return input[mask]  # B*K*C --> M * C
+    return input[mask.bool()]  # B*K*C --> M * C
 
 def extract_target_from_tensor(target, mask):
-    return target[mask]
+    return target[mask.bool()]
 
 
 if __name__ == '__main__':

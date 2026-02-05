@@ -10,9 +10,8 @@ from lib.datasets.kitti.kitti_utils import get_objects_from_label
 from lib.datasets.kitti.kitti_utils import Calibration
 from lib.datasets.kitti.kitti_utils import get_affine_transform
 from lib.datasets.kitti.kitti_utils import affine_transform
-from lib.datasets.kitti.kitti_eval_python.eval import get_official_eval_result
-from lib.datasets.kitti.kitti_eval_python.eval import get_distance_eval_result
-import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
+from lib.datasets.kitti.kitti_eval import get_official_eval_result, get_distance_eval_result
+import lib.datasets.kitti.kitti_eval.utils as kitti
 
 
 class KITTI_Dataset(data.Dataset):
@@ -46,7 +45,7 @@ class KITTI_Dataset(data.Dataset):
         self.idx_list = [x.strip() for x in open(self.split_file).readlines()]
 
         # path configuration
-        self.data_dir = os.path.join(self.root_dir, 'object', 'testing' if split == 'test' else 'training')
+        self.data_dir = os.path.join(self.root_dir, 'testing' if split == 'test' else 'training')
         self.image_dir = os.path.join(self.data_dir, 'image_2')
         self.depth_dir = os.path.join(self.data_dir, 'depth')
         self.calib_dir = os.path.join(self.data_dir, 'calib')
@@ -70,6 +69,11 @@ class KITTI_Dataset(data.Dataset):
 
         # others
         self.downsample = 4
+        # cache settings
+        self.cache_labels = cfg.get('cache_labels', True)
+        self.cache_calibs = cfg.get('cache_calibs', True)
+        self._label_cache = {}
+        self._calib_cache = {}
 
 
 
@@ -80,30 +84,120 @@ class KITTI_Dataset(data.Dataset):
 
 
     def get_label(self, idx):
+        if self.cache_labels and idx in self._label_cache:
+            return self._label_cache[idx]
         label_file = os.path.join(self.label_dir, '%06d.txt' % idx)
         assert os.path.exists(label_file)
-        return get_objects_from_label(label_file)
+        labels = get_objects_from_label(label_file)
+        if self.cache_labels:
+            self._label_cache[idx] = labels
+        return labels
 
 
     def get_calib(self, idx):
+        if self.cache_calibs and idx in self._calib_cache:
+            return self._calib_cache[idx]
         calib_file = os.path.join(self.calib_dir, '%06d.txt' % idx)
         assert os.path.exists(calib_file)
-        return Calibration(calib_file)
+        calib = Calibration(calib_file)
+        if self.cache_calibs:
+            self._calib_cache[idx] = calib
+        return calib
 
     def eval(self, results_dir, logger):
-        logger.info("==> Loading detections and GTs...")
+        logger.info("Loading detections and GTs...")
         img_ids = [int(id) for id in self.idx_list]
-        dt_annos = kitti.get_label_annos(results_dir)
+        dt_annos = kitti.get_label_annos(results_dir, img_ids)
         gt_annos = kitti.get_label_annos(self.label_dir, img_ids)
 
         test_id = {'Car': 0, 'Pedestrian':1, 'Cyclist': 2}
 
-        logger.info('==> Evaluating (official) ...')
+        logger.info('Evaluating (official) ...')
+        all_metrics = {}
         for category in self.writelist:
-            results_str, results_dict = get_official_eval_result(gt_annos, dt_annos, test_id[category])
-            logger.info(results_str)
+            # results_str, results_dict = get_official_eval_result(gt_annos, dt_annos, test_id[category])
+            # 接收新增的 rich_data
+            results_str, results_dict, rich_data = get_official_eval_result(gt_annos, dt_annos, test_id[category])
+            
+            # 不再打印 raw string
+            # logger.info(results_str) 
+            
+            all_metrics.update(results_dict)
+            
+            # 使用 logger_helper 中的 rich 打印函数
+            # 注意: logger 可能是 Loguru logger，也可能是我们自定义的 something holding console
+            # 这里我们直接从 lib.helpers.logger_helper 导入 print_kitti_eval_results
+            from lib.helpers.logger_helper import print_kitti_eval_results
+            import os
+            import json
+            
+            # --- Load/Save previous results mechanism ---
+            prev_rich_data = None
+            try:
+                # results_dir typically: .../experiments/run_id/visualizations/epoch_XX/data
+                # We want to store in: .../experiments/run_id/visualizations/last_eval_result.json
+                
+                # Heuristic: go up 3 levels from 'data' to get to 'visualizations' context (roughly)
+                # results_dir: .../epoch_1/data
+                # parent: .../epoch_1
+                # grandparent: .../visualizations (or checkpoints etc)
+                
+                # Careful handling of paths
+                epoch_dir = os.path.dirname(results_dir)    # .../epoch_1
+                visualizations_dir = os.path.dirname(epoch_dir) # .../visualizations
+                
+                last_result_path = os.path.join(visualizations_dir, 'last_eval_result.json')
+                
+                # If we are not in expected structure, fallback to writing in results_dir parent
+                if not os.path.exists(visualizations_dir):
+                    last_result_path = os.path.join(epoch_dir, 'last_eval_result.json')
 
-
+                if os.path.exists(last_result_path):
+                     with open(last_result_path, 'r') as f:
+                        prev_all_rich = json.load(f)
+                        prev_rich_data = prev_all_rich # This might be a list of multiple classes
+                
+                # To support multiple classes in loop, we need to be careful.
+                # 'rich_data' returned by 'get_official_eval_result' is a list (usually len=1 logic per call if single class)
+                # But 'all_metrics' accumulates.
+                # Let's read/write the full list.
+                # However, this loop processes one category at a time.
+                # We should append to a persistent list or read partial. 
+                # For simplicity, let's just pass what we have loaded.
+                
+            except Exception as e:
+                pass
+            
+            print_kitti_eval_results(rich_data, prev_rich_data)
+            
+            # Update the stored json on disk with current new data for THIS category
+            if 'last_result_path' in locals():
+               # 1. Try to load existing data
+               current_disk_data = []
+               try:
+                   if os.path.exists(last_result_path):
+                       with open(last_result_path, 'r') as f:
+                           current_disk_data = json.load(f)
+               except Exception:
+                   # If load fails (e.g. corruption), start fresh
+                   current_disk_data = []
+               
+               # 2. Update and Write
+               try:
+                   # Remove old entry for this class if exists & data is valid list
+                   if isinstance(current_disk_data, list):
+                        current_disk_data = [d for d in current_disk_data if isinstance(d, dict) and d.get('class_name') != rich_data[0]['class_name']]
+                   else:
+                        current_disk_data = []
+                        
+                   # Add new
+                   current_disk_data.extend(rich_data)
+                   
+                   with open(last_result_path, 'w') as f:
+                       # Use default=... to handle numpy arrays
+                       json.dump(current_disk_data, f, default=lambda o: o.tolist() if isinstance(o, np.ndarray) else None)
+               except Exception as e:
+                   logger.warning(f"Failed to save evaluation results: {e}")
     def __len__(self):
         return self.idx_list.__len__()
 

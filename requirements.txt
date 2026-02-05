@@ -2,4 +2,12 @@ fire
 scikit-image
 tqdm
 pyyaml
-numba
+opencv-python
+loguru
+rich
+timm
+tabulate
+
+torch
+torchvision
+triton
