@@ -22,14 +22,13 @@ Please download [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object
 └── data
     └── KITTI
         ├── ImageSets [already provided]
-        └── object
-            ├── training
-            │   ├── calib (unzipped from calib.zip)
-            │   ├── image_2 (unzipped from left_color.zip)
-            │   └── label_2 (unzipped from label_2.zip)
-            └── testing
-                ├── calib
-                └── image_2
+        ├── training
+        │   ├── calib (unzipped from calib.zip)
+        │   ├── image_2 (unzipped from left_color.zip)
+        │   └── label_2 (unzipped from label_2.zip)
+        └── testing
+            ├── calib
+            └── image_2
 ```
 
 ### Training & Evaluation
@@ -37,15 +36,22 @@ Please download [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object
 Run the following commands in the project root:
 
 ```sh
-# 1. Training (using default config)
+# 1. Training (single GPU)
 python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
 
-# 2. Evaluation only
+# 2. Training (DDP, 2 GPUs)
+torchrun --nproc_per_node=2 tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
+
+# 3. Evaluation only
 python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml --e
 
-# 3. Check all available options
+# 4. Check all available options
 python tools/train_val.py -- --help
 ```
+
+All outputs (logs/checkpoints/visualizations/outputs) are saved under `runs/<timestamp>/`.
+
+Backbone defaults to timm (e.g., resnet34). You can change it in the config using `model.backbone` and `model.backbone_source`.
 
 The model will be evaluated automatically once training is completed. You can run `bash experiments/kitti/clear_cache.sh` to quickly remove logs and checkpoints.
 

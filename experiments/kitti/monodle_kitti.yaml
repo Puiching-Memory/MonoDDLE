@@ -2,6 +2,7 @@ random_seed: 444
 
 dataset:
   type: &dataset_type 'KITTI'
+  root_dir: 'data/KITTI'
   batch_size: 16
   use_3d_center: True
   class_merging: False
@@ -35,6 +36,8 @@ trainer:
   gpu_ids: 0, 1
   save_frequency: 10 # checkpoint save interval (in epoch)
   # resume_model: 'checkpoints/checkpoint_epoch_70.pth'
+  amp: True
+  compile: True
 
 
 tester:
