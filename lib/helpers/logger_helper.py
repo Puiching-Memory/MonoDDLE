@@ -25,6 +25,7 @@ from rich.progress import (
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+from rich.rule import Rule
 from rich.logging import RichHandler
 from rich.traceback import install as install_rich_traceback
 
@@ -48,6 +49,24 @@ MONODLE_THEME = Theme({
 console = Console(theme=MONODLE_THEME, force_terminal=True)
 
 
+def _log_rich_content(content):
+    """
+    Helper function to log rich content to file via loguru
+    """
+    if MonoDDLELogger._instance and MonoDDLELogger._instance.log_file and MonoDDLELogger._instance.is_main:
+        try:
+            from io import StringIO
+            buf = StringIO()
+            temp_console = Console(file=buf, force_terminal=False, width=160, color_system=None)
+            temp_console.print(content)
+            text = buf.getvalue().rstrip()
+            if text:
+                # 使用 bind(console=False) 防止输出到控制台，仅记录到文件
+                logger.bind(console=False).info("\n" + text)
+        except Exception:
+            pass
+
+
 def print_dict_table(data: dict, title: str = "Metrics"):
     """
     打印字典数据为表格
@@ -64,6 +83,7 @@ def print_dict_table(data: dict, title: str = "Metrics"):
         table.add_row(k, val_str)
 
     console.print(table)
+    _log_rich_content(table)
 
 
 def print_kitti_eval_results(rich_data, prev_rich_data=None):
@@ -123,6 +143,7 @@ def print_kitti_eval_results(rich_data, prev_rich_data=None):
             table_ap.add_row(*row_data)
         
         console.print(table_ap)
+        _log_rich_content(table_ap)
         
         # AP R40 Table
         table_r40 = Table(title=f"{class_name} AP_R40@{overlap_str}", border_style="magenta", box=None)
@@ -143,6 +164,7 @@ def print_kitti_eval_results(rich_data, prev_rich_data=None):
             table_r40.add_row(*row_data)
         
         console.print(table_r40)
+        _log_rich_content(table_r40)
         console.print("") # spacing
 
 
@@ -247,6 +269,7 @@ class MonoDDLELogger:
                 format="{message}",  # 格式在 sink 中处理
                 level=self.level,
                 colorize=False,  # 由 Rich 处理颜色
+                filter=lambda record: record["extra"].get("console", True)
             )
         
         # 文件输出
@@ -280,6 +303,7 @@ class MonoDDLELogger:
             border_style="blue",
         )
         console.print(panel)
+        _log_rich_content(panel)
     
     @property
     def logger(self):
@@ -327,14 +351,18 @@ class MonoDDLELogger:
         if not self.is_main:
             return
         console.rule(f"[{style}]{title}[/{style}]", style=style)
+        _log_rich_content(Rule(f"[{style}]{title}[/{style}]", style=style))
     
     def print_section(self, title: str, content: str = ""):
         """打印章节"""
         if not self.is_main:
             return
-        console.print(f"\n[bold blue]{'='*20}  {title}  {'='*20}[/bold blue]")
+        msg = f"\n[bold blue]{'='*20}  {title}  {'='*20}[/bold blue]"
+        console.print(msg)
+        _log_rich_content(msg)
         if content:
             console.print(content)
+            _log_rich_content(content)
     
     def print_config(self, config: dict, title: str = "Configuration"):
         """以表格形式打印配置"""
@@ -354,6 +382,7 @@ class MonoDDLELogger:
         
         add_items(config)
         console.print(table)
+        _log_rich_content(table)
     
     def print_metrics(self, metrics: dict, title: str = "Metrics", highlight_key: Optional[str] = None):
         """以表格形式打印评估指标"""
@@ -372,6 +401,7 @@ class MonoDDLELogger:
                 table.add_row(key, f"[{style}]{value}[/{style}]")
         
         console.print(table)
+        _log_rich_content(table)
     
     def print_training_status(
         self,
@@ -383,6 +413,7 @@ class MonoDDLELogger:
         lr: float,
         data_time: float = 0.0,
         iter_time: float = 0.0,
+        stats_dict: dict = None,
     ):
         """打印训练状态"""
         if not self.is_main:
@@ -398,8 +429,17 @@ class MonoDDLELogger:
             status += f" | [dim]Data: {data_time:.3f}s[/dim]"
         if iter_time > 0:
             status += f" | [dim]Iter: {iter_time:.3f}s[/dim]"
+
+        if stats_dict:
+            # 格式化各个 loss 组件
+            loss_components = []
+            for k, v in stats_dict.items():
+                loss_components.append(f"{k}: {v:.4f}")
+            if loss_components:
+                status += " | [cyan]" + " ".join(loss_components) + "[/cyan]"
         
         console.print(status)
+        _log_rich_content(status)
     
     def print_checkpoint_info(self, checkpoint_path: str, action: str = "Saved"):
         """打印 checkpoint 信息"""
@@ -425,9 +465,9 @@ class MonoDDLELogger:
         table.add_row("Model Size (MB)", f"{total_params * 4 / 1024 / 1024:.2f}")
         
         console.print(table)
-
-
-# ============ 进度条工具 ============
+        _log_rich_content(table)
+    
+    # ============ 进度条工具 ============
 
 def create_progress_bar(description: str = "Processing", transient: bool = False) -> Progress:
     """创建美观的进度条"""
