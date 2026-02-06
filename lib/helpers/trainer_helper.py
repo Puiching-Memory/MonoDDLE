@@ -1,6 +1,7 @@
 import os
 import time
 import tempfile
+import glob
 
 import torch
 import torch.distributed as dist
@@ -133,6 +134,14 @@ class Trainer(object):
                         if current > self.best_metric:
                             improved = True
                             self.best_metric = current
+                            
+                            # Clean up previous best checkpoints
+                            for prev_best in glob.glob(os.path.join(self.ckpt_dir, 'best_epoch_*.*')):
+                                try:
+                                    os.remove(prev_best)
+                                except Exception:
+                                    pass
+
                             best_ckpt = os.path.join(self.ckpt_dir, 'best_epoch_%d' % self.epoch)
                             save_checkpoint(get_checkpoint_state(self.model, self.optimizer, self.epoch), best_ckpt)
                             self.logger.print_checkpoint_info(best_ckpt + '.safetensors', action="Saved (Best)")
@@ -155,6 +164,7 @@ class Trainer(object):
         self.model.train()
         total_loss_sum = 0.0
         total_samples = 0
+        total_stats = {}
         
         with create_progress_bar(description="Training Iterations", transient=True) as progress:
             iter_task = progress.add_task(
@@ -180,6 +190,10 @@ class Trainer(object):
                     outputs = self.model(inputs)
                     total_loss, stats_batch = compute_centernet3d_loss(outputs, targets)
                 
+                # accumulation stats
+                for k, v in stats_batch.items():
+                    total_stats[k] = total_stats.get(k, 0) + v
+                
                 self.scaler.scale(total_loss).backward()
 
                 if self.is_main and self.report_unused_params and not self._reported_unused_params:
@@ -203,6 +217,7 @@ class Trainer(object):
 
                 if self.is_main and (batch_idx + 1) % 50 == 0:
                     avg_loss = total_loss_sum / max(1, total_samples)
+                    avg_stats = {k: v / max(1, total_samples) for k, v in total_stats.items()}
                     current_lr = self.optimizer.param_groups[0]['lr']
                     self.logger.print_training_status(
                         epoch=self.epoch + 1,
@@ -213,6 +228,7 @@ class Trainer(object):
                         lr=current_lr,
                         data_time=data_time,
                         iter_time=iter_time,
+                        stats_dict=avg_stats,
                     )
 
                 progress.update(iter_task, advance=1)

@@ -2,10 +2,20 @@ import numpy as np
 import torch
 import math
 
+import os
+from torch.utils.cpp_extension import load
+
 try:
-    from . import iou3d_cuda
-except ImportError:
-    print("Warning: iou3d_cuda extension not found. Please compile it using setup.py.")
+    src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src')
+    sources = [os.path.join(src_dir, 'iou3d.cpp'), os.path.join(src_dir, 'iou3d_kernel.cu')]
+    
+    iou3d_cuda = load(
+        name='iou3d_cuda',
+        sources=sources,
+        verbose=True
+    )
+except Exception as e:
+    print(f"Error JIT compiling iou3d_cuda: {e}")
     raise
 
 DISTANCE_COVER = False

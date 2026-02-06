@@ -198,6 +198,9 @@ class KITTI_Dataset(data.Dataset):
                        json.dump(current_disk_data, f, default=lambda o: o.tolist() if isinstance(o, np.ndarray) else None)
                except Exception as e:
                    logger.warning(f"Failed to save evaluation results: {e}")
+        
+        return all_metrics
+
     def __len__(self):
         return self.idx_list.__len__()
 
