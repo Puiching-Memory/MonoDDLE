@@ -1,0 +1,61 @@
+# YOLO3D experiment config — YOLO26m backbone (NMS-free end2end)
+# End-to-end detection, reg_max=1, dual one2many/one2one heads
+# Uses E2ELoss with decaying o2m/o2o weight schedule
+#
+# Usage:
+#   python tools/train_yolo3d.py --model yolo26m.pt --data experiments/kitti/yolo3d_26m.yaml
+#   python tools/train_yolo3d.py --model yolo26m.yaml --data experiments/kitti/yolo3d_26m.yaml
+
+# ---- Model ----
+model: yolo26m.pt          # pretrained weights or .yaml for from-scratch
+
+# ---- Dataset ----
+root_dir: data/KITTI
+train: train
+val: val
+
+nc: 3
+names:
+  0: Pedestrian
+  1: Car
+  2: Cyclist
+channels: 3
+
+# KITTI-specific
+writelist: ['Car']
+use_3d_center: True
+bbox2d_type: 'anno'
+meanshape: False
+class_merging: False
+use_dontcare: False
+
+# Image resolution (W, H)
+resolution: [1280, 384]
+
+# Augmentation
+random_flip: 0.5
+random_crop: 0.5
+scale: 0.4
+shift: 0.1
+
+# 3D detection
+num_heading_bin: 12
+cls_mean_size:
+  - [1.76255119, 0.66068622, 0.84422524]   # Pedestrian
+  - [1.52563191, 1.62856739, 3.52588311]   # Car
+  - [1.73698127, 0.59706367, 1.76282397]   # Cyclist
+
+# ---- Training ----
+epochs: 140
+batch: 16
+imgsz: 1280
+device: '0'
+workers: 8
+patience: 50
+lr0: 0.01
+amp: True
+project: runs/yolo3d
+name: yolo26m
+
+# ---- Visualization ----
+max_vis_batches: 2  # number of batches to visualize during validation (0 to disable)

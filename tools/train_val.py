@@ -1,3 +1,35 @@
+"""
+MonoDLE / CenterNet3D Training Script.
+
+Features:
+  - DDP (DistributedDataParallel) multi-GPU training  (``--ddp``)
+  - AMP (Automatic Mixed Precision)                   (``--amp``)
+  - torch.compile graph-mode acceleration              (``--compile``)
+  - timm backbone / optimizer integration              (via yaml config)
+  - EMA (Exponential Moving Average) of weights        (``--ema``)
+  - Deterministic seeding                              (``--seed``)
+  - YOLO3D-compatible output directory layout
+
+Usage:
+    # Single GPU (legacy DataParallel)
+    python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
+
+    # Single GPU with AMP + EMA + compile
+    python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml \\
+        --amp --ema --compile
+
+    # Multi-GPU DDP (e.g. 2 GPUs)
+    torchrun --nproc_per_node=2 tools/train_val.py \\
+        --config experiments/kitti/monodle_kitti.yaml --ddp --amp --ema
+
+    # Evaluation only
+    python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml -e
+
+    # Use YOLO3D-style output layout: runs/monodle/<name>
+    python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml \\
+        --project runs/monodle --name train
+"""
+
 import os
 import sys
 
@@ -6,8 +38,9 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
 import yaml
-import fire
+import argparse
 import datetime
+
 import torch
 import torch.distributed as dist
 
@@ -17,130 +50,215 @@ from lib.helpers.optimizer_helper import build_optimizer
 from lib.helpers.scheduler_helper import build_lr_scheduler
 from lib.helpers.trainer_helper import Trainer
 from lib.helpers.tester_helper import Tester
-from lib.helpers.logger_helper import MonoDDLELogger, console
-from lib.helpers.utils_helper import set_random_seed, set_cudnn
+from lib.helpers.utils_helper import (
+    create_logger,
+    set_random_seed,
+    setup_ddp,
+    cleanup_ddp,
+    is_main_process,
+)
 
 
-def _init_distributed():
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        rank = int(os.environ['RANK'])
-        world_size = int(os.environ['WORLD_SIZE'])
-        local_rank = int(os.environ.get('LOCAL_RANK', 0))
-        dist.init_process_group(backend='nccl', init_method='env://')
-        torch.cuda.set_device(local_rank)
-        return True, rank, world_size, local_rank
-    return False, 0, 1, 0
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='MonoDLE CenterNet3D — Monocular 3D Object Detection',
+    )
+    parser.add_argument('--config', dest='config', required=True,
+                        help='Path to experiment yaml config')
+    parser.add_argument('-e', '--evaluate_only', action='store_true', default=False,
+                        help='Run evaluation only (no training)')
+
+    # ── Output layout (matches YOLO3D convention) ─────────────────────
+    parser.add_argument('--project', type=str, default=None,
+                        help='Project directory (default from yaml or runs/monodle)')
+    parser.add_argument('--name', type=str, default=None,
+                        help='Experiment name / subfolder (default from yaml or "train")')
+    parser.add_argument('-o', '--output_dir', type=str, default=None,
+                        help='Explicit output directory (overrides --project/--name)')
+
+    # ── Training enhancements ─────────────────────────────────────────
+    parser.add_argument('--ddp', action='store_true', default=False,
+                        help='Use DistributedDataParallel (launch with torchrun)')
+    parser.add_argument('--amp', action='store_true', default=False,
+                        help='Enable Automatic Mixed Precision (FP16)')
+    parser.add_argument('--compile', action='store_true', default=False,
+                        help='Enable torch.compile (PyTorch >= 2.0)')
+    parser.add_argument('--compile-backend', type=str, default='inductor',
+                        help='torch.compile backend (default: inductor)')
+    parser.add_argument('--ema', action='store_true', default=False,
+                        help='Enable Exponential Moving Average of weights')
+    parser.add_argument('--ema-decay', type=float, default=0.9999,
+                        help='EMA decay factor (default: 0.9999)')
+
+    # ── Reproducibility ───────────────────────────────────────────────
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Random seed (overrides yaml random_seed)')
+    parser.add_argument('--deterministic', action='store_true', default=True,
+                        help='Enable deterministic algorithms (default: True)')
+    parser.add_argument('--no-deterministic', dest='deterministic', action='store_false',
+                        help='Disable deterministic algorithms for speed')
+
+    return parser.parse_args()
 
 
-def main(config, e=False, amp=None, compile=None):
-    assert (os.path.exists(config))
-    cfg = yaml.load(open(config, 'r'), Loader=yaml.Loader)
-    distributed, rank, world_size, local_rank = _init_distributed()
-    set_random_seed(cfg.get('random_seed', 444))
-    set_cudnn()
-    run_dir = os.path.join('runs', datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
-    if rank == 0:
-        os.makedirs(run_dir, exist_ok=True)
-    log_file = os.path.join(run_dir, 'train_%s.log' % datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
-    logger = MonoDDLELogger(log_file if rank == 0 else None, rank=rank)
-    cfg.setdefault('trainer', {})['output_dir'] = run_dir
-    
-    if amp is not None:
-        cfg['trainer']['amp'] = amp
-    else:
-        cfg['trainer'].setdefault('amp', False)
-        
-    if compile is not None:
-        cfg['trainer']['compile'] = compile
-    else:
-        cfg['trainer'].setdefault('compile', False)
+def _resolve_output_dir(args, cfg):
+    """Resolve the output directory in YOLO3D-compatible format.
 
-    cfg.setdefault('tester', {})['output_dir'] = run_dir
+    Priority: ``--output_dir`` > ``--project/--name`` > yaml ``output_dir``
+              > ``runs/monodle/train``
+    """
+    if args.output_dir:
+        return args.output_dir
+
+    project = args.project or cfg.get('project', 'runs/monodle')
+    name = args.name or cfg.get('name', 'train')
+    return os.path.join(project, name)
 
 
-    # build dataloader
-    train_loader, test_loader  = build_dataloader(cfg['dataset'])
+def _save_args_yaml(output_dir, args, cfg):
+    """Save the effective config + CLI args to ``args.yaml`` (like YOLO3D)."""
+    merged = dict(cfg)
+    merged['cli'] = {
+        'ddp': args.ddp,
+        'amp': args.amp,
+        'compile': args.compile,
+        'compile_backend': args.compile_backend,
+        'ema': args.ema,
+        'ema_decay': args.ema_decay,
+        'seed': args.seed,
+        'deterministic': args.deterministic,
+    }
+    path = os.path.join(output_dir, 'args.yaml')
+    with open(path, 'w') as f:
+        yaml.dump(merged, f, default_flow_style=False, sort_keys=False)
 
-    # build model
+
+# ─── DDP worker entry point ──────────────────────────────────────────
+
+def main():
+    args = parse_args()
+    assert os.path.exists(args.config), 'Config not found: %s' % args.config
+    cfg = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
+
+    # ── Distributed setup ─────────────────────────────────────────────
+    rank = 0
+    world_size = 1
+    if args.ddp:
+        rank = int(os.environ.get('LOCAL_RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        setup_ddp(rank, world_size)
+
+    # ── Seed ──────────────────────────────────────────────────────────
+    seed = args.seed if args.seed is not None else cfg.get('random_seed', 444)
+    set_random_seed(seed + rank, deterministic=args.deterministic)
+
+    # ── Output directory (YOLO3D layout) ──────────────────────────────
+    output_dir = _resolve_output_dir(args, cfg)
+    if is_main_process():
+        os.makedirs(output_dir, exist_ok=True)
+
+    log_file = os.path.join(
+        output_dir,
+        'train.log.%s' % datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
+    )
+    logger = create_logger(log_file, rank=rank)
+
+    # Log config summary
+    if is_main_process():
+        logger.info('Config: %s' % args.config)
+        logger.info('Output: %s' % output_dir)
+        logger.info('DDP: %s  |  AMP: %s  |  compile: %s  |  EMA: %s' %
+                     (args.ddp, args.amp, args.compile, args.ema))
+        logger.info('Seed: %d  |  Deterministic: %s' % (seed, args.deterministic))
+        _save_args_yaml(output_dir, args, cfg)
+
+    # Inject output_dir into trainer/tester configs
+    cfg.setdefault('trainer', {})['output_dir'] = output_dir
+    cfg.setdefault('tester', {})['output_dir'] = output_dir
+
+    # Resolve relative checkpoint paths against output_dir
+    for section in ['trainer', 'tester']:
+        for key in ['checkpoint', 'resume_model', 'pretrain_model', 'checkpoints_dir']:
+            path = cfg.get(section, {}).get(key)
+            if path and not os.path.isabs(path) and not os.path.exists(path):
+                alt = os.path.join(output_dir, path)
+                if os.path.exists(alt) or os.path.exists(alt + '.pth'):
+                    cfg[section][key] = alt
+
+    # ── Build dataloader ──────────────────────────────────────────────
+    train_loader, test_loader, train_sampler = build_dataloader(
+        cfg['dataset'], distributed=args.ddp,
+    )
+
+    # ── Build model ───────────────────────────────────────────────────
     model = build_model(cfg['model'])
 
-    if rank == 0:
-        try:
-            from torch.utils.flop_counter import FlopCounterMode
-            has_flop_counter = True
-        except ImportError:
-            has_flop_counter = False
-            logger.warning("torch.utils.flop_counter not found. Skipping FLOPs calculation.")
-            
-        if has_flop_counter:
-            try:
-                logger.info("Calculating model FLOPs with torch.utils.flop_counter ...")
-                
-                # Prepare dummy input
-                resolution = cfg['dataset'].get('resolution', [384, 1280]) # H, W
-                # CenterNet3D input: (B, C, H, W)
-                dummy_input = torch.randn(1, 3, resolution[0], resolution[1])
-                
-                # Use GPU if available
-                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                model.to(device)
-                dummy_input = dummy_input.to(device)
-                
-                # Context manager for counting
-                with FlopCounterMode(display=True):
-                    model(dummy_input)
-                
-                # Move model back to CPU to maintain consistency with subsequent code
-                model.to('cpu')
-                del dummy_input
-                torch.cuda.empty_cache()
-            except Exception as flop_error:
-                logger.warning(f"Error calculating FLOPs: {flop_error}")
-                model.to('cpu') # Ensure model is back on CPU
-
-    if e:
-        logger.print_section('Evaluation Only')
-        tester = Tester(cfg=cfg['tester'],
-                        model=model,
-                        dataloader=test_loader,
-                        logger=logger)
-        if rank == 0:
-            tester.test()
-        return
-
-    #  build optimizer
-    optimizer = build_optimizer(cfg['optimizer'], model)
-
-    # build lr scheduler
-    lr_scheduler, warmup_lr_scheduler = build_lr_scheduler(cfg['lr_scheduler'], optimizer, last_epoch=-1)
-
-
-    logger.print_section('Training')
-    logger.print_config({
-        'Batch Size': cfg['dataset']['batch_size'],
-        'Learning Rate': cfg['optimizer']['lr'],
-        'Max Epochs': cfg['trainer'].get('max_epoch', 'N/A'),
-        'Output Dir': run_dir,
-    }, title='Training Configuration')
-    
-    trainer = Trainer(cfg=cfg['trainer'],
-                      model=model,
-                      optimizer=optimizer,
-                      train_loader=train_loader,
-                      test_loader=test_loader,
-                      lr_scheduler=lr_scheduler,
-                      warmup_lr_scheduler=warmup_lr_scheduler,
-                      logger=logger)
-    trainer.train()
-
-    if rank == 0:
-        logger.print_section('Final Evaluation')
+    # ── Evaluate only ─────────────────────────────────────────────────
+    if args.evaluate_only:
+        if is_main_process():
+            logger.info('###################  Evaluation Only  ##################')
         tester = Tester(cfg=cfg['tester'],
                         model=model,
                         dataloader=test_loader,
                         logger=logger)
         tester.test()
+        if args.ddp:
+            cleanup_ddp()
+        return
+
+    # ── Build optimizer ───────────────────────────────────────────────
+    optimizer = build_optimizer(cfg['optimizer'], model)
+
+    # ── Build LR scheduler ────────────────────────────────────────────
+    lr_scheduler, warmup_lr_scheduler = build_lr_scheduler(
+        cfg['lr_scheduler'], optimizer, last_epoch=-1,
+    )
+
+    # ── EMA ───────────────────────────────────────────────────────────
+    ema = None
+    if args.ema:
+        from lib.helpers.ema_helper import ModelEMA
+        ema = ModelEMA(model, decay=args.ema_decay)
+        if is_main_process():
+            logger.info('EMA enabled (decay=%.6f)' % args.ema_decay)
+
+    # ── Train ─────────────────────────────────────────────────────────
+    if is_main_process():
+        logger.info('###################  Training  ##################')
+        logger.info('Batch Size: %d (x%d GPUs)' % (cfg['dataset']['batch_size'], world_size))
+        logger.info('Learning Rate: %f' % cfg['optimizer']['lr'])
+
+    trainer = Trainer(
+        cfg=cfg['trainer'],
+        model=model,
+        optimizer=optimizer,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        lr_scheduler=lr_scheduler,
+        warmup_lr_scheduler=warmup_lr_scheduler,
+        logger=logger,
+        train_sampler=train_sampler,
+        rank=rank,
+        world_size=world_size,
+        use_amp=args.amp,
+        compile_model=args.compile,
+        compile_backend=args.compile_backend,
+        ema=ema,
+    )
+    trainer.train()
+
+    # ── Final evaluation ──────────────────────────────────────────────
+    if is_main_process():
+        logger.info('###################  Evaluation  ##################')
+        tester = Tester(cfg=cfg['tester'],
+                        model=trainer.model,
+                        dataloader=test_loader,
+                        logger=logger)
+        tester.test()
+
+    if args.ddp:
+        cleanup_ddp()
 
 
 if __name__ == '__main__':
-    fire.Fire(main)
+    main()

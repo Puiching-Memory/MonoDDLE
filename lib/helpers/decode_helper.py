@@ -4,111 +4,52 @@ import torch.nn as nn
 from lib.datasets.utils import class2angle
 
 
-def class2angle_torch(cls, residual, to_label_format=False):
-    angle_per_class = 2 * np.pi / float(12)
-    angle_center = cls.float() * angle_per_class
-    angle = angle_center + residual
-    if to_label_format:
-        angle = torch.where(angle > np.pi, angle - 2 * np.pi, angle)
-    return angle
-
-
-def get_heading_angle_torch(heading):
-    heading_bin = heading[:, 0:12]
-    heading_res = heading[:, 12:24]
-    cls = torch.argmax(heading_bin, dim=1)
-    res = heading_res.gather(1, cls.view(-1, 1)).squeeze(1)
-    return class2angle_torch(cls, res, to_label_format=True)
-
-
 def decode_detections(dets, info, calibs, cls_mean_size, threshold):
     '''
-    input: dets, torch tensor [batch x max_dets x dim]
-    input: img_info, dict
+    NOTE: THIS IS A NUMPY FUNCTION (matches official MonoDLE exactly)
+    input: dets, numpy array, shape in [batch x max_dets x dim]
+    input: img_info, dict, necessary information of input images
     input: calibs, corresponding calibs for the input batch
     output:
     '''
-    if not torch.is_tensor(dets):
-        dets = torch.as_tensor(dets, device='cuda', dtype=torch.float32)
-    device = dets.device
-
-    bbox_downsample_ratio = info['bbox_downsample_ratio']
-    if not torch.is_tensor(bbox_downsample_ratio):
-        bbox_downsample_ratio = torch.as_tensor(bbox_downsample_ratio, device=device, dtype=torch.float32)
-    img_ids = info['img_id']
-    if not torch.is_tensor(img_ids):
-        img_ids = torch.as_tensor(img_ids, device=device)
-
-    cls_mean_size = torch.as_tensor(cls_mean_size, device=device, dtype=torch.float32)
-
-    scores = dets[:, :, 1]
-    valid_mask = scores >= threshold
-
     results = {}
-    for i in range(dets.shape[0]):
+    for i in range(dets.shape[0]):  # batch
         preds = []
-        valid_inds = torch.nonzero(valid_mask[i], as_tuple=False).squeeze(1)
-        if valid_inds.numel() == 0:
-            results[int(img_ids[i].item())] = preds
-            continue
+        for j in range(dets.shape[1]):  # max_dets
+            cls_id = int(dets[i, j, 0])
+            score = dets[i, j, 1]
+            if score < threshold:
+                continue
 
-        di = dets[i, valid_inds]
-        cls_id = di[:, 0].long()
-        score = di[:, 1] * di[:, -1]
+            # 2d bboxs decoding
+            x = dets[i, j, 2] * info['bbox_downsample_ratio'][i][0]
+            y = dets[i, j, 3] * info['bbox_downsample_ratio'][i][1]
+            w = dets[i, j, 4] * info['bbox_downsample_ratio'][i][0]
+            h = dets[i, j, 5] * info['bbox_downsample_ratio'][i][1]
+            bbox = [x-w/2, y-h/2, x+w/2, y+h/2]
 
-        ratio = bbox_downsample_ratio[i]
-        x = di[:, 2] * ratio[0]
-        y = di[:, 3] * ratio[1]
-        w = di[:, 4] * ratio[0]
-        h = di[:, 5] * ratio[1]
-        bbox = torch.stack((x - w / 2, y - h / 2, x + w / 2, y + h / 2), dim=1)
+            # 3d bboxs decoding
+            # depth decoding
+            depth = dets[i, j, 6]
 
-        depth = di[:, 6]
-        dimensions = di[:, 31:34] + cls_mean_size[cls_id]
-        x3d = di[:, 34] * ratio[0]
-        y3d = di[:, 35] * ratio[1]
-        heading = di[:, 7:31]
-        alpha = get_heading_angle_torch(heading)
+            # dimensions decoding
+            dimensions = dets[i, j, 31:34]
+            dimensions += cls_mean_size[int(cls_id)]
 
-        cls_id_cpu = cls_id.detach().cpu().numpy()
-        score_cpu = score.detach().cpu().numpy()
-        bbox_cpu = bbox.detach().cpu().numpy()
-        dimensions_cpu = dimensions.detach().cpu().numpy()
-        x3d_cpu = x3d.detach().cpu().numpy()
-        y3d_cpu = y3d.detach().cpu().numpy()
-        depth_cpu = depth.detach().cpu().numpy()
-        alpha_cpu = alpha.detach().cpu().numpy()
+            # positions decoding
+            x3d = dets[i, j, 34] * info['bbox_downsample_ratio'][i][0]
+            y3d = dets[i, j, 35] * info['bbox_downsample_ratio'][i][1]
+            locations = calibs[i].img_to_rect(x3d, y3d, depth).reshape(-1)
+            locations[1] += dimensions[0] / 2
 
-        for j in range(len(cls_id_cpu)):
-            cls_val = int(cls_id_cpu[j])
-            x3d_val = float(x3d_cpu[j])
-            y3d_val = float(y3d_cpu[j])
-            depth_val = float(depth_cpu[j])
+            # heading angle decoding
+            alpha = get_heading_angle(dets[i, j, 7:31])
+            ry = calibs[i].alpha2ry(alpha, x3d)
 
-            locations = calibs[i].img_to_rect(np.array([x3d_val]), np.array([y3d_val]), np.array([depth_val])).reshape(-1)
-            locations[1] += dimensions_cpu[j][0] / 2
+            score = score * dets[i, j, -1]
 
-            alpha_val = float(alpha_cpu[j])
-            ry = calibs[i].alpha2ry(alpha_val, x3d_val)
-
-            preds.append([
-                cls_val,
-                alpha_val,
-                bbox_cpu[j][0],
-                bbox_cpu[j][1],
-                bbox_cpu[j][2],
-                bbox_cpu[j][3],
-                dimensions_cpu[j][0],
-                dimensions_cpu[j][1],
-                dimensions_cpu[j][2],
-                locations[0],
-                locations[1],
-                locations[2],
-                ry,
-                float(score_cpu[j]),
-            ])
-
-        results[int(img_ids[i].item())] = preds
+            preds.append([cls_id, alpha] + bbox + dimensions.tolist() + locations.tolist() + [ry, score])
+        results[info['img_id'][i]] = preds
     return results
 
 
@@ -208,12 +149,12 @@ def _gather_feat(feat, ind, mask=None):
 
     Returns: tensor shaped in B * K or B * sum(mask)
     '''
-    dim  = feat.size(2)
-    ind  = ind.unsqueeze(2).expand(ind.size(0), ind.size(1), dim)
-    feat = feat.gather(1, ind)
+    dim  = feat.size(2)  # get channel dim
+    ind  = ind.unsqueeze(2).expand(ind.size(0), ind.size(1), dim)  # B*len(ind) --> B*len(ind)*1 --> B*len(ind)*C
+    feat = feat.gather(1, ind)  # B*(HW)*C ---> B*K*C
     if mask is not None:
-        mask = mask.unsqueeze(2).expand_as(feat)
-        feat = feat[mask]
+        mask = mask.unsqueeze(2).expand_as(feat)  # B*50 ---> B*K*1 --> B*K*C
+        feat = feat[mask.bool()]
         feat = feat.view(-1, dim)
     return feat
 
@@ -225,9 +166,9 @@ def _transpose_and_gather_feat(feat, ind):
         ind: indices tensor shaped in B * K
     Returns:
     '''
-    feat = feat.permute(0, 2, 3, 1).contiguous()
-    feat = feat.view(feat.size(0), -1, feat.size(3))
-    feat = _gather_feat(feat, ind)
+    feat = feat.permute(0, 2, 3, 1).contiguous()   # B * C * H * W ---> B * H * W * C
+    feat = feat.view(feat.size(0), -1, feat.size(3))   # B * H * W * C ---> B * (H*W) * C
+    feat = _gather_feat(feat, ind)     # B * len(ind) * C
     return feat
 
 
@@ -236,13 +177,3 @@ def get_heading_angle(heading):
     cls = np.argmax(heading_bin)
     res = heading_res[cls]
     return class2angle(cls, res, to_label_format=True)
-
-
-
-if __name__ == '__main__':
-    ## testing
-    from lib.datasets.kitti.kitti_dataset import KITTI_Dataset
-    from torch.utils.data import DataLoader
-
-    dataset = KITTI_Dataset('../../data', 'train')
-    dataloader = DataLoader(dataset=dataset, batch_size=2)

@@ -1,5 +1,10 @@
 random_seed: 444
 
+# ── Output layout (matches YOLO3D convention) ─────────────────────────
+# Final output: <project>/<name>/  →  runs/monodle/train/
+project: runs/monodle
+name: train
+
 dataset:
   type: &dataset_type 'KITTI'
   root_dir: 'data/KITTI'
@@ -20,29 +25,34 @@ model:
   backbone: 'dla34'
   neck: 'DLAUp'
   num_class: 3
+  # ── timm backbone example (uncomment to use) ──
+  # type: 'centernet3d_timm'
+  # backbone: 'resnet50'
+  # pretrained: true
 
 optimizer:
-  type: 'adam'
+  type: 'adam'           # sgd | adam | adamw | radam | nadam | or any timm optimizer
   lr: 0.00125
   weight_decay: 0.00001
+  # timm: false          # set true to force timm optimizer factory
+  # momentum: 0.9        # for SGD
+  # nesterov: false       # for SGD
 
 lr_scheduler:
-  warmup: True  # 5 epoches, cosine warmup, init_lir=0.00001 in default
+  warmup: True  # 5 epochs, cosine warmup, init_lr=0.00001 in default
   decay_rate: 0.1
   decay_list: [90, 120]
 
 trainer:
   max_epoch: 140
   gpu_ids: 0, 1
-  save_frequency: 10 # checkpoint save interval (in epoch)
-  # resume_model: 'checkpoints/checkpoint_epoch_70.pth'
-  amp: True
-  compile: True
+  save_frequency: 10
 
 
 tester:
   type: *dataset_type
   mode: single   # 'single' or 'all'
-  checkpoint: 'checkpoints/checkpoint_epoch_140.pth'  # for 'single' mode
-  checkpoints_dir: 'checkpoints'  # for 'all' model
+  checkpoint: 'weights/checkpoint_epoch_140.pth'  # for 'single' mode
+  checkpoints_dir: 'weights'  # for 'all' mode
   threshold: 0.2  # confidence filter
+  max_vis_batches: 2  # number of batches to visualize (0 to disable)

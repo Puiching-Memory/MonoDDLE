@@ -16,7 +16,7 @@ def get_kitti_bev_distribution(root_dir='../../data',
     assert split in ['train', 'val', 'trainval', 'test']
     split_dir = os.path.join(root_dir, 'KITTI', 'ImageSets', split + '.txt')
     idx_list = [x.strip() for x in open(split_dir).readlines()]
-    data_dir = os.path.join(root_dir, 'KITTI', 'object', 'testing' if split == 'test' else 'training')
+    data_dir = os.path.join(root_dir, 'KITTI', 'testing' if split == 'test' else 'training')
 
     x_list = []
     z_list = []
