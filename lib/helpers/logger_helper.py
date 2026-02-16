@@ -26,6 +26,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.rule import Rule
+from rich import box
 from rich.logging import RichHandler
 from rich.traceback import install as install_rich_traceback
 
@@ -88,84 +89,141 @@ def print_dict_table(data: dict, title: str = "Metrics"):
 
 def print_kitti_eval_results(rich_data, prev_rich_data=None):
     """
-    使用 Rich 表格打印 KITTI 评估结果
+    使用 Rich 表格打印 KITTI 评估结果 (Markdown 风格统一表格)
     rich_data: list of dicts collected in get_official_eval_result
     prev_rich_data: list of dicts from previous evaluation (optional)
     """
 
-    # Helper to find matching previous data
-    def get_prev_block(p_data, c_name, o_str):
-        if not p_data: return None
-        for item in p_data:
-            if item['class_name'] == c_name and item['overlap_str'] == o_str:
-                return item
-        return None
-
-    def format_score_with_diff(score, prev_score):
-        score_txt = f"{score:.4f}"
-        if prev_score is None:
-            return score_txt
+    # 按类名和 overlap 分组
+    data_by_class = {}
+    for item in rich_data:
+        c_name = item['class_name']
+        if c_name not in data_by_class:
+            data_by_class[c_name] = {}
+        data_by_class[c_name][item['overlap_str']] = item
         
-        diff = score - prev_score
+    prev_by_class = {}
+    if prev_rich_data:
+        for item in prev_rich_data:
+            c_name = item['class_name']
+            if c_name not in prev_by_class:
+                prev_by_class[c_name] = {}
+            prev_by_class[c_name][item['overlap_str']] = item
+
+    def get_score(item, m_type, m_name, diff_idx):
+        if not item or m_type not in item:
+            return None
+        scores = item[m_type].get(m_name)
+        if scores is None or diff_idx >= len(scores):
+            return None
+        return float(scores[diff_idx])
+
+    def format_val(val, prev_val):
+        if val is None:
+            return "-"
+        score_txt = f"{val:.2f}"
+        if prev_val is None:
+            return score_txt
+        diff = val - prev_val
         if abs(diff) < 1e-4:
             return score_txt
-        
-        # Color the diff
-        if diff > 0:
-            diff_styled = f"[green]↑{abs(diff):.4f}[/]" 
-        else:
-            diff_styled = f"[red]↓{abs(diff):.4f}[/]"
-            
+        diff_styled = f"[green]↑{abs(diff):.2f}[/]" if diff > 0 else f"[red]↓{abs(diff):.2f}[/]"
         return f"{score_txt} {diff_styled}"
 
-    for item in rich_data:
-        class_name = item['class_name']
-        overlap_str = item['overlap_str']
-        
-        prev_item = get_prev_block(prev_rich_data, class_name, overlap_str)
-        
-        # AP Table
-        table_ap = Table(title=f"{class_name} AP@{overlap_str}", border_style="blue", box=None)
-        table_ap.add_column("Metric", style="bold cyan")
-        table_ap.add_column("Easy", justify="right", style="green")
-        table_ap.add_column("Mod.", justify="right", style="yellow")
-        table_ap.add_column("Hard", justify="right", style="red")
+    for cat_name in ['Car', 'Pedestrian', 'Cyclist']:
+        if cat_name not in data_by_class:
+            continue
 
-        for metric_name, scores in item['metrics'].items():
-            prev_scores = prev_item['metrics'].get(metric_name) if prev_item and metric_name in prev_item['metrics'] else None
-            
-            row_data = [f"{metric_name} AP"]
-            for i in range(3): # Easy, Mod, Hard
-                s = scores[i]
-                p = prev_scores[i] if prev_scores else None
-                row_data.append(format_score_with_diff(s, p))
-                
-            table_ap.add_row(*row_data)
-        
-        console.print(table_ap)
-        _log_rich_content(table_ap)
-        
-        # AP R40 Table
-        table_r40 = Table(title=f"{class_name} AP_R40@{overlap_str}", border_style="magenta", box=None)
-        table_r40.add_column("Metric", style="bold cyan")
-        table_r40.add_column("Easy", justify="right", style="green")
-        table_r40.add_column("Mod.", justify="right", style="yellow")
-        table_r40.add_column("Hard", justify="right", style="red")
+        overlaps = data_by_class[cat_name]
+        prev_overlaps = prev_by_class.get(cat_name, {})
 
-        for metric_name, scores in item['metrics_R40'].items():
-            prev_scores = prev_item['metrics_R40'].get(metric_name) if prev_item and metric_name in prev_item['metrics_R40'] else None
-            
-            row_data = [f"{metric_name} AP"]
-            for i in range(3): # Easy, Mod, Hard
-                s = scores[i]
-                p = prev_scores[i] if prev_scores else None
-                row_data.append(format_score_with_diff(s, p))
+        # KITTI 评估通常关注 R40
+        if cat_name == 'Car':
+            primary_key = '0.70, 0.70, 0.70'
+            secondary_key = '0.70, 0.50, 0.50'
+        else:
+            primary_key = '0.50, 0.50, 0.50'
+            secondary_key = '0.50, 0.25, 0.25'
 
-            table_r40.add_row(*row_data)
+        item_p = overlaps.get(primary_key)
+        item_s = overlaps.get(secondary_key)
+        prev_p = prev_overlaps.get(primary_key)
+        prev_s = prev_overlaps.get(secondary_key)
+
+        if not item_p:
+            continue
+
+        logger.info(f"Official Evaluation Results for {cat_name}:")
+
+        # 打印 R40 统一表格 (与 README KITTI 验证集风格一致)
+        table = Table(
+            title=f"{cat_name} AP_R40 Performance (Standard Format)",
+            header_style="bold cyan",
+            border_style="magenta",
+            box=box.MARKDOWN,
+        )
+        table.add_column("Type", style="bold", no_wrap=True)
         
-        console.print(table_r40)
-        _log_rich_content(table_r40)
-        console.print("") # spacing
+        # 定义要展示的 R40 列 (label, metric_name, item_source, prev_item_source)
+        cols = [
+            ("3D@0.7 (E)", "3d", item_p, prev_p),
+            ("3D@0.7 (M)", "3d", item_p, prev_p),
+            ("3D@0.7 (H)", "3d", item_p, prev_p),
+            ("BEV@0.7 (E)", "bev", item_p, prev_p),
+            ("BEV@0.7 (M)", "bev", item_p, prev_p),
+            ("BEV@0.7 (H)", "bev", item_p, prev_p),
+        ]
+        
+        if cat_name == 'Car':
+            if item_s:
+                cols.extend([
+                    ("3D@0.5 (E)", "3d", item_s, prev_s),
+                    ("3D@0.5 (M)", "3d", item_s, prev_s),
+                    ("3D@0.5 (H)", "3d", item_s, prev_s),
+                    ("BEV@0.5 (E)", "bev", item_s, prev_s),
+                    ("BEV@0.5 (M)", "bev", item_s, prev_s),
+                    ("BEV@0.5 (H)", "bev", item_s, prev_s),
+                ])
+            cols.extend([
+                ("AOS (E)", "aos", item_p, prev_p),
+                ("AOS (M)", "aos", item_p, prev_p),
+                ("AOS (H)", "aos", item_p, prev_p),
+            ])
+        elif item_s:
+            cols.extend([
+                ("3D@Sec (E)", "3d", item_s, prev_s),
+                ("3D@Sec (M)", "3d", item_s, prev_s),
+                ("3D@Sec (H)", "3d", item_s, prev_s),
+            ])
+
+        for label, _, _, _ in cols:
+            style = "green" if "(E)" in label else "yellow" if "(M)" in label else "red"
+            table.add_column(label, justify="right", style=style)
+
+        # 添加 R40 行
+        r40_row = ["AP_R40"]
+        # 我们需要知道每个指标对应的 idx (0:easy, 1:mod, 2:hard)
+        # 这里借助 enumerate 和取模
+        for i, (label, m_name, it, pit) in enumerate(cols):
+            diff_idx = i % 3 # 虽然 cols 列表是平铺的，但每 3 个是一组 (E, M, H)
+            val = get_score(it, 'metrics_R40', m_name, diff_idx)
+            pval = get_score(pit, 'metrics_R40', m_name, diff_idx)
+            r40_row.append(format_val(val, pval))
+        
+        table.add_row(*r40_row)
+        
+        # 可选：如果也想看 AP_11，可以加一行
+        ap11_row = ["AP_11"]
+        for i, (label, m_name, it, pit) in enumerate(cols):
+            diff_idx = i % 3
+            val = get_score(it, 'metrics', m_name, diff_idx)
+            pval = get_score(pit, 'metrics', m_name, diff_idx)
+            ap11_row.append(format_val(val, pval))
+        table.add_row(*ap11_row)
+
+        console.print(table)
+        _log_rich_content(table)
+        console.print("")
 
 
 class MonoDDLELogger:
@@ -499,6 +557,272 @@ def create_epoch_progress(total_epochs: int, description: str = "Training") -> P
     )
 
 
+# ============ CSV 评估结果保存 ============
+
+def save_eval_to_csv(rich_data, csv_path, model_name="unknown", epoch=None):
+    """
+    将评估结果追加保存到 CSV 文件。
+
+    Parameters
+    ----------
+    rich_data : list[dict]
+        来自 get_official_eval_result 的结构化评估数据。
+    csv_path : str
+        CSV 文件路径，若不存在则自动创建并写入表头。
+    model_name : str
+        模型/架构名称，如 'monodle', 'yolo3d_v8n' 等。
+    epoch : int or None
+        当前 epoch 编号。
+    """
+    import csv
+    from datetime import datetime
+
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    file_exists = os.path.exists(csv_path)
+
+    # 固定列名（与 rich_data 中 metrics 的 key 对应）
+    metric_keys = ["bbox", "bev", "3d", "aos"]
+    difficulties = ["easy", "mod", "hard"]
+
+    fieldnames = ["epoch", "timestamp", "model", "category", "overlap"]
+    for mk in metric_keys:
+        for diff in difficulties:
+            fieldnames.append(f"{mk}_{diff}")
+    for mk in metric_keys:
+        for diff in difficulties:
+            fieldnames.append(f"{mk}_R40_{diff}")
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        for item in rich_data:
+            row = {
+                "epoch": epoch if epoch is not None else "",
+                "timestamp": ts,
+                "model": model_name,
+                "category": item["class_name"],
+                "overlap": item["overlap_str"],
+            }
+            # AP (11-point)
+            for mk in metric_keys:
+                scores = item["metrics"].get(mk)
+                for i, diff in enumerate(difficulties):
+                    col = f"{mk}_{diff}"
+                    row[col] = f"{float(scores[i]):.4f}" if scores is not None and i < len(scores) else ""
+            # AP R40
+            for mk in metric_keys:
+                scores = item["metrics_R40"].get(mk)
+                for i, diff in enumerate(difficulties):
+                    col = f"{mk}_R40_{diff}"
+                    row[col] = f"{float(scores[i]):.4f}" if scores is not None and i < len(scores) else ""
+
+            writer.writerow(row)
+
+    logger.info(f"评估结果已追加保存到 {csv_path}")
+
+
+def print_best_epoch_results(csv_path, metric_key='Car_3d_moderate_R40', logger_obj=None):
+    """
+    从 eval_results.csv 中找到最佳 epoch，并以论文表格格式打印该 epoch 的所有结果。
+
+    输出格式与 KITTI benchmark 论文表格一致：
+    - Table: Car 3D/BEV/AOS @ IoU=0.7 (test set style)
+    - Table: Car 3D/BEV @ IoU=0.7 and IoU=0.5 (validation set style)
+
+    Parameters
+    ----------
+    csv_path : str
+        eval_results.csv 文件路径。
+    metric_key : str
+        用于确定最佳 epoch 的指标列名，如 '3d_R40_mod'。
+    logger : MonoDDLELogger or None
+        日志对象。
+    """
+    import csv
+
+    if not os.path.exists(csv_path):
+        if logger:
+            logger.warning(f"CSV file not found: {csv_path}")
+        return
+
+    # 读取 CSV
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        if logger:
+            logger.warning("CSV file is empty.")
+        return
+
+    # 将 metric_key 映射到 CSV 列名
+    # metric_key 格式: Car_3d_moderate_R40 -> 需要在 category=Car, overlap 包含 0.70 的行中查找 3d_R40_mod
+    # 解析 metric_key
+    parts = metric_key.split('_')
+    # e.g. Car_3d_moderate_R40 -> category=Car, metric=3d, difficulty=moderate, R40
+    target_category = parts[0]
+    is_r40 = metric_key.endswith('_R40')
+    if is_r40:
+        # e.g. Car_3d_moderate_R40
+        difficulty_map = {'easy': 'easy', 'moderate': 'mod', 'hard': 'hard'}
+        target_difficulty = difficulty_map.get(parts[-2], parts[-2])
+        target_metric_type = '_'.join(parts[1:-2])  # e.g. '3d'
+        csv_col = f"{target_metric_type}_R40_{target_difficulty}"
+    else:
+        difficulty_map = {'easy': 'easy', 'moderate': 'mod', 'hard': 'hard'}
+        target_difficulty = difficulty_map.get(parts[-1], parts[-1])
+        target_metric_type = '_'.join(parts[1:-1])
+        csv_col = f"{target_metric_type}_{target_difficulty}"
+
+    # 找到最佳 epoch
+    best_epoch = None
+    best_val = -1.0
+
+    for row in rows:
+        if row.get('category', '') != target_category:
+            continue
+        # 选择主要 overlap (0.70 for Car)
+        overlap = row.get('overlap', '')
+        if target_category == 'Car' and '0.70, 0.70, 0.70' not in overlap:
+            continue
+        elif target_category == 'Pedestrian' and '0.50, 0.50, 0.50' not in overlap:
+            continue
+        elif target_category == 'Cyclist' and '0.50, 0.50, 0.50' not in overlap:
+            continue
+
+        epoch_str = row.get('epoch', '')
+        if not epoch_str:
+            continue
+        try:
+            epoch_val = int(epoch_str)
+        except (ValueError, TypeError):
+            continue
+
+        val_str = row.get(csv_col, '')
+        if not val_str:
+            continue
+        try:
+            val = float(val_str)
+        except (ValueError, TypeError):
+            continue
+
+        if val > best_val:
+            best_val = val
+            best_epoch = epoch_val
+
+    if best_epoch is None:
+        logger.warning(f"Could not find best epoch for metric: {metric_key}")
+        return
+
+    # 收集最佳 epoch 的所有行
+    best_rows = [r for r in rows if r.get('epoch', '') == str(best_epoch)]
+
+    if not best_rows:
+        logger.warning(f"No data found for best epoch {best_epoch}")
+        return
+
+    # 按 category 和 overlap 组织数据
+    categories = {}
+    for row in best_rows:
+        cat = row.get('category', '')
+        overlap = row.get('overlap', '')
+        if cat not in categories:
+            categories[cat] = {}
+        categories[cat][overlap] = row
+
+    model_name = best_rows[0].get('model', 'unknown')
+
+    # ═══ 打印 Test Set 风格表格 (AP R40) ═══
+    # 格式与图片中 Table 3/4 一致
+    logger.success(f"Found Best Epoch: {best_epoch} (by {metric_key} = {best_val:.2f})")
+
+    for cat_name in ['Car', 'Pedestrian', 'Cyclist']:
+        if cat_name not in categories:
+            continue
+
+        overlaps = categories[cat_name]
+
+        # 确定主要和次要 overlap
+        if cat_name == 'Car':
+            primary_overlap_key = '0.70, 0.70, 0.70'
+            secondary_overlap_key = '0.50, 0.50, 0.50'
+        elif cat_name == 'Pedestrian':
+            primary_overlap_key = '0.50, 0.50, 0.50'
+            secondary_overlap_key = '0.50, 0.25, 0.25'
+        else:  # Cyclist
+            primary_overlap_key = '0.50, 0.50, 0.50'
+            secondary_overlap_key = '0.50, 0.25, 0.25'
+
+        # === 统一结果表格 (与 README KITTI 验证集风格一致) ===
+        primary_row = overlaps.get(primary_overlap_key)
+        secondary_row = overlaps.get(secondary_overlap_key)
+
+        if not primary_row:
+            continue
+
+        table = Table(
+            title=f"{cat_name} AP_R40 Performance (KITTI Val Style)",
+            header_style="bold cyan",
+            border_style="magenta",
+            box=box.MARKDOWN, # 使用 Markdown 风格边框，方便直接复制进入 README
+        )
+        
+        table.add_column("Method", style="bold", no_wrap=True)
+        
+        # 定义列
+        cols = [
+            ("3D@0.7 (Easy)", "3d_R40_easy", primary_row),
+            ("3D@0.7 (Mod.)", "3d_R40_mod", primary_row),
+            ("3D@0.7 (Hard)", "3d_R40_hard", primary_row),
+            ("BEV@0.7 (Easy)", "bev_R40_easy", primary_row),
+            ("BEV@0.7 (Mod.)", "bev_R40_mod", primary_row),
+            ("BEV@0.7 (Hard)", "bev_R40_hard", primary_row),
+        ]
+        
+        if cat_name == 'Car':
+            # 根据 README Table 2，增加 0.5 结果
+            if secondary_row:
+                cols.extend([
+                    ("3D@0.5 (Easy)", "3d_R40_easy", secondary_row),
+                    ("3D@0.5 (Mod.)", "3d_R40_mod", secondary_row),
+                    ("3D@0.5 (Hard)", "3d_R40_hard", secondary_row),
+                    ("BEV@0.5 (Easy)", "bev_R40_easy", secondary_row),
+                    ("BEV@0.5 (Mod.)", "bev_R40_mod", secondary_row),
+                    ("BEV@0.5 (Hard)", "bev_R40_hard", secondary_row),
+                ])
+            # 添加 AOS (Table 1 风格)
+            cols.extend([
+                ("AOS (Easy)", "aos_R40_easy", primary_row),
+                ("AOS (Mod.)", "aos_R40_mod", primary_row),
+                ("AOS (Hard)", "aos_R40_hard", primary_row),
+            ])
+
+        for label, _, _ in cols:
+            style = "green" if "Easy" in label else "yellow" if "Mod." in label else "red"
+            table.add_column(label, justify="right", style=style)
+
+        def fmt(val_str):
+            try:
+                v = float(val_str)
+                return f"{v:.2f}"
+            except (ValueError, TypeError):
+                return "-"
+
+        row_data = [f"{model_name} (ep{best_epoch})"]
+        for _, key, row in cols:
+            row_data.append(fmt(row.get(key, '')))
+
+        table.add_row(*row_data)
+        console.print(table)
+        _log_rich_content(table)
+
+        console.print("")
+
+
 # ============ 便捷导出 ============
 
 __all__ = [
@@ -506,4 +830,7 @@ __all__ = [
     'console',
     'create_progress_bar',
     'create_epoch_progress',
+    'print_kitti_eval_results',
+    'save_eval_to_csv',
+    'print_best_epoch_results',
 ]

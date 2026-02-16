@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 import os
 import torch
-from lib.datasets.kitti.kitti_utils import get_affine_transform, affine_transform
+from lib.datasets.transforms import get_affine_transform, affine_transform
 
-def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, threshold=0.2, output_dir='visualizations', epoch=0, gt_objects=None, dataset=None):
+def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, threshold=0.2, output_dir='visualizations', epoch=0, gt_objects=None, dataset=None, writelist=None):
     """
     Visualizes the predictions and ground truths for a batch of images.
     images: (B, 3, H, W) tensor, normalized
@@ -68,7 +68,7 @@ def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, thr
              hm_img = cv2.resize(hm_max, (img_base.shape[1], img_base.shape[0]))
              hm_color = cv2.applyColorMap(hm_img, cv2.COLORMAP_JET)
              img_heatmap = cv2.addWeighted(img_base, 0.6, hm_color, 0.4, 0)
-             cv2.imwrite(os.path.join(output_dir, f'epoch_{epoch}_id_{img_id:06d}_heatmap.png'), img_heatmap)
+             cv2.imwrite(os.path.join(output_dir, f'id_{img_id:06d}_heatmap.png'), img_heatmap)
 
         # --- 2. Visualize 2D Boxes ---
         img_2d = img_base.copy()
@@ -76,6 +76,7 @@ def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, thr
         if gt_objects is not None and i < len(gt_objects):
             for obj in gt_objects[i]:
                 if obj.cls_type == 'DontCare': continue
+                if writelist is not None and obj.cls_type not in writelist: continue
                 x1, y1, x2, y2 = obj.box2d
                 if trans is not None:
                      pt1 = affine_transform(np.array([x1, y1]), trans)
@@ -100,7 +101,7 @@ def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, thr
                 x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
                 cv2.rectangle(img_2d, (x1, y1), (x2, y2), (0, 255, 0), 2) # Green for Pred
         
-        cv2.imwrite(os.path.join(output_dir, f'epoch_{epoch}_id_{img_id:06d}_2d.png'), img_2d)
+        cv2.imwrite(os.path.join(output_dir, f'id_{img_id:06d}_2d.png'), img_2d)
 
         # --- 3. Visualize 3D Boxes ---
         img_3d = img_base.copy()
@@ -109,6 +110,7 @@ def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, thr
         if gt_objects is not None and i < len(gt_objects):
             for obj in gt_objects[i]:
                 if obj.cls_type == 'DontCare': continue
+                if writelist is not None and obj.cls_type not in writelist: continue
                 corners3d = obj.generate_corners3d()
                 pts_2d, _ = calibs[i].rect_to_img(corners3d)
                 if trans is not None:
@@ -153,7 +155,7 @@ def visualize_results(images, outputs, targets, info, calibs, cls_mean_size, thr
                 img_3d = draw_projected_box3d(img_3d, pts_2d, color=(0, 255, 0)) # Green for pred
         
         # Save image
-        save_path = os.path.join(output_dir, f'epoch_{epoch}_id_{img_id:06d}_3d.png')
+        save_path = os.path.join(output_dir, f'id_{img_id:06d}_3d.png')
         cv2.imwrite(save_path, img_3d)
 
 def draw_projected_box3d(image, qs, color=(0, 255, 0), thickness=2):

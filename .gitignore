@@ -7,5 +7,7 @@ train.log
 __pycache__/
 *.log
 *.pth
+*.pt
 /checkpoints/
 runs/
+data/

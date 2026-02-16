@@ -1,7 +1,24 @@
+"""
+Checkpoint save / load utilities.
+
+Supports DataParallel, DistributedDataParallel, EMA, AMP GradScaler,
+and torch.compile wrapped models.
+"""
+
 import os
 import torch
 import torch.nn as nn
-from safetensors.torch import save_file, load_file
+
+
+def _unwrap_model(model):
+    """Unwrap DataParallel / DDP / compiled model to get the raw module."""
+    m = model
+    # torch.compile wraps in OptimizedModule (torch >= 2.0)
+    if hasattr(m, '_orig_mod'):
+        m = m._orig_mod
+    if isinstance(m, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+        m = m.module
+    return m
 
 
 def model_state_to_cpu(model_state):
@@ -11,60 +28,79 @@ def model_state_to_cpu(model_state):
     return model_state_cpu
 
 
-def get_checkpoint_state(model=None, optimizer=None, epoch=None):
+def get_checkpoint_state(model=None, optimizer=None, epoch=None,
+                         scaler=None, ema=None, extra=None):
+    """Build a checkpoint dict.
+
+    Args:
+        model: the training model (may be DP/DDP/compiled wrapped).
+        optimizer: optimizer (optional).
+        epoch: current epoch number.
+        scaler: ``torch.amp.GradScaler`` instance (optional).
+        ema: ``ModelEMA`` instance (optional).
+        extra: dict of arbitrary extra state to persist.
+    """
     optim_state = optimizer.state_dict() if optimizer is not None else None
+
     if model is not None:
-        if isinstance(model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
-            model_state = model_state_to_cpu(model.module.state_dict())
-        else:
-            model_state = model.state_dict()
+        raw = _unwrap_model(model)
+        model_state = model_state_to_cpu(raw.state_dict())
     else:
         model_state = None
 
-    return {'epoch': epoch, 'model_state': model_state, 'optimizer_state': optim_state}
+    state = {
+        'epoch': epoch,
+        'model_state': model_state,
+        'optimizer_state': optim_state,
+    }
+
+    if scaler is not None:
+        state['scaler_state'] = scaler.state_dict()
+
+    if ema is not None:
+        state['ema_state'] = ema.state_dict()
+
+    if extra is not None:
+        state.update(extra)
+
+    return state
 
 
 def save_checkpoint(state, filename):
-    # Save model weights using safetensors
-    if state['model_state'] is not None:
-        model_filename = '{}.safetensors'.format(filename)
-        save_file(state['model_state'], model_filename)
-
-    # Save optimizer and other info using torch.save
-    optimizer_filename = '{}.optimizer.pth'.format(filename)
-    other_state = {k: v for k, v in state.items() if k != 'model_state'}
-    torch.save(other_state, optimizer_filename)
+    filename = '{}.pth'.format(filename)
+    torch.save(state, filename)
 
 
-def load_checkpoint(model, optimizer, filename, map_location, logger=None):
-    if logger:
-        logger.info(f"Loading from checkpoint '{filename}'")
+def load_checkpoint(model, optimizer, filename, map_location,
+                    logger=None, scaler=None, ema=None):
+    """Load model / optimizer / scaler / ema from a checkpoint file.
 
-    epoch = -1
-    
-    # Force usage of safetensors
-    if not filename.endswith('.safetensors'):
-        filename = filename + '.safetensors'
-
+    Returns:
+        epoch saved in the checkpoint (int).
+    """
     if os.path.isfile(filename):
-        # Load model state
-        if model is not None:
-            model_state = load_file(filename, device=str(map_location))
-            model.load_state_dict(model_state)
-        
-        # Try to load optimizer state
-        optimizer_filename = filename.replace('.safetensors', '.optimizer.pth')
-        if os.path.isfile(optimizer_filename):
-            checkpoint_opt = torch.load(optimizer_filename, map_location)
-            epoch = checkpoint_opt.get('epoch', -1)
-            if optimizer is not None and checkpoint_opt.get('optimizer_state') is not None:
-                optimizer.load_state_dict(checkpoint_opt['optimizer_state'])
-            if logger:
-                logger.success(f"Checkpoint (SafeTensors + Opt) loaded successfully (epoch {epoch})")
-        else:
-            if logger:
-                logger.warning(f"Transformation loaded from SafeTensors, but optimizer file '{optimizer_filename}' not found.")
+        if logger:
+            logger.info("==> Loading from checkpoint '{}'".format(filename))
+        checkpoint = torch.load(filename, map_location=map_location,
+                                weights_only=False)
+        epoch = checkpoint.get('epoch', -1)
+
+        if model is not None and checkpoint.get('model_state') is not None:
+            raw = _unwrap_model(model)
+            raw.load_state_dict(checkpoint['model_state'], strict=False)
+
+        if optimizer is not None and checkpoint.get('optimizer_state') is not None:
+            optimizer.load_state_dict(checkpoint['optimizer_state'])
+
+        if scaler is not None and checkpoint.get('scaler_state') is not None:
+            scaler.load_state_dict(checkpoint['scaler_state'])
+
+        if ema is not None and checkpoint.get('ema_state') is not None:
+            ema.load_state_dict(checkpoint['ema_state'])
+
+        if logger:
+            logger.info("==> Done (epoch %d)" % epoch)
     else:
-        raise FileNotFoundError(f"File not found: {filename}")
+        raise FileNotFoundError("Checkpoint not found: %s" % filename)
 
     return epoch

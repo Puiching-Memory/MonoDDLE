@@ -1,429 +1,496 @@
-#include <torch/extension.h>
+/*
+ * KITTI 评估 CUDA 内核
+ * ====================
+ *
+ * 精确复刻 kitti_eval_python/rotate_iou.py 的算法逻辑，
+ * 保证计算结果与 numba CUDA 参考实现完全一致。
+ *
+ * 包含:
+ *   - 2D 框 IoU (axis-aligned)
+ *   - 旋转框 BEV IoU (基于点-四边形测试 + 线段相交)
+ *   - 3D 框 IoU (BEV 交叠面积 × 高度交叠)
+ */
+
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <vector>
+#include <math.h>
 
-#define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
+#define DIVUP(m, n) ((m) / (n) + ((m) % (n) > 0))
+#define THREADS_PER_BLOCK 64  // 8*8, 与参考实现一致
 
-#define DIVUP(m,n) ((m) / (n) + ((m) % (n) > 0))
+/* ═══════════════════ 旋转框 BEV IoU (精确复刻参考实现) ═══════════════════ */
 
-const float EPS = 1e-8;
-
-__device__ inline float check_rect_cross(const float& p1x, const float& p1y, const float& p2x, const float& p2y, const float& q1x, const float& q1y, const float& q2x, const float& q2y, float& inter_x, float& inter_y) {
-    float dx1 = p2x - p1x;
-    float dy1 = p2y - p1y;
-    float dx2 = q2x - q1x;
-    float dy2 = q2y - q1y;
-    
-    float D = dx1 * dy2 - dy1 * dx2;
-    if (abs(D) < 1e-8) return 0.0f;
-    
-    float D1 = (q1x - p1x) * dy2 - (q1y - p1y) * dx2;
-    float D2 = (q1x - p1x) * dy1 - (q1y - p1y) * dx1;
-    
-    float t1 = D1 / D;
-    float t2 = D2 / D;
-    
-    if (t1 >= 0 && t1 <= 1 && t2 >= 0 && t2 <= 1) {
-        inter_x = p1x + t1 * dx1;
-        inter_y = p1y + t1 * dy1;
-        return 1.0f;
-    }
-    return 0.0f;
+/*
+ * 三角形面积 (带符号)
+ * 对应 rotate_iou.py: trangle_area(a, b, c)
+ */
+__device__ __forceinline__ float trangle_area(
+    float ax, float ay, float bx, float by, float cx, float cy
+) {
+    return ((ax - cx) * (by - cy) - (ay - cy) * (bx - cx)) / 2.0f;
 }
 
-__device__ inline float polygon_area(const float* poly_x, const float* poly_y, int count) {
-    if (count < 3) return 0.0f;
-    float area = 0.0f;
-    for (int i = 0; i < count; i++) {
-        area += poly_x[i] * poly_y[(i + 1) % count] - poly_x[(i + 1) % count] * poly_y[i];
+/*
+ * 凸多边形面积 (三角扇)
+ * 对应 rotate_iou.py: area(int_pts, num_of_inter)
+ */
+__device__ __forceinline__ float polygon_area_fan(const float* int_pts, int num_of_inter) {
+    float area_val = 0.0f;
+    for (int i = 0; i < num_of_inter - 2; i++) {
+        area_val += fabsf(
+            trangle_area(
+                int_pts[0], int_pts[1],
+                int_pts[2 * i + 2], int_pts[2 * i + 3],
+                int_pts[2 * i + 4], int_pts[2 * i + 5]
+            )
+        );
     }
-    return 0.5f * abs(area);
+    return area_val;
 }
 
+/*
+ * 凸多边形顶点排序 (极角插入排序)
+ * 对应 rotate_iou.py: sort_vertex_in_convex_polygon(int_pts, num_of_inter)
+ */
+__device__ void sort_vertex_in_convex_polygon(float* int_pts, int num_of_inter) {
+    if (num_of_inter <= 0) return;
 
-__device__ inline float devRotateIoU(const float* box_a, const float* box_b) {
-    // params: box_a (5): x, y, w, h, angle (rad/deg?) - Python code does conversion. 
-    // We assume input here is x, y, w, h, angle (radians).
-    
-    // Unpack
-    float cx1 = box_a[0];
-    float cy1 = box_a[1];
-    float w1 = box_a[2];
-    float h1 = box_a[3];
-    float a1 = box_a[4]; // expected in radians
-
-    float cx2 = box_b[0];
-    float cy2 = box_b[1];
-    float w2 = box_b[2];
-    float h2 = box_b[3];
-    float a2 = box_b[4]; // radians
-
-    float cos1 = cos(a1), sin1 = sin(a1);
-    float cos2 = cos(a2), sin2 = sin(a2);
-
-    float rect1_x[4], rect1_y[4];
-    float rect2_x[4], rect2_y[4];
-    
-    // Generate vertices for rect1 (centered)
-    // 0: -w/2, -h/2 -> (-w/2)*c - (-h/2)*s + cx
-    // Order: (- -), (+ -), (+ +), (- +)
-    // 0: bottom-left, 1: bottom-right, 2: top-right, 3: top-left (in standard coords)
-    
-    float dx1[4] = {-w1/2, w1/2, w1/2, -w1/2};
-    float dy1[4] = {-h1/2, -h1/2, h1/2, h1/2};
-    
-    for (int i=0; i<4; i++) {
-        rect1_x[i] = cx1 + dx1[i]*cos1 - dy1[i]*sin1;
-        rect1_y[i] = cy1 + dx1[i]*sin1 + dy1[i]*cos1;
+    float center_x = 0.0f, center_y = 0.0f;
+    for (int i = 0; i < num_of_inter; i++) {
+        center_x += int_pts[2 * i];
+        center_y += int_pts[2 * i + 1];
     }
-    
-    float dx2[4] = {-w2/2, w2/2, w2/2, -w2/2};
-    float dy2[4] = {-h2/2, -h2/2, h2/2, h2/2};
-    
-    for (int i=0; i<4; i++) {
-        rect2_x[i] = cx2 + dx2[i]*cos2 - dy2[i]*sin2;
-        rect2_y[i] = cy2 + dx2[i]*sin2 + dy2[i]*cos2;
-    }
-    
-    // Sutherland-Hodgman clipping
-    // Max vertices = 8
-    float poly_x[24], poly_y[24];
-    float new_poly_x[24], new_poly_y[24];
-    int count = 4;
-    for(int i=0; i<4; i++) {
-        poly_x[i] = rect1_x[i];
-        poly_y[i] = rect1_y[i];
-    }
-    
-    // Clip against edges of rect2
-    for(int edge=0; edge<4; edge++) {
-        float edge_start_x = rect2_x[edge];
-        float edge_start_y = rect2_y[edge];
-        float edge_end_x = rect2_x[(edge+1)%4];
-        float edge_end_y = rect2_y[(edge+1)%4];
-        
-        // Edge normal (inward pointing)
-        // Edge vector = (dx, dy). Normal (-dy, dx)
-        // Check center of rect2 to determine direction? 
-        // Or simpler: just use line equation CP (Cross Product) > 0
-        // (p.x - start.x) * (end.y - start.y) - (p.y - start.y) * (end.x - start.x)
-        
-        int new_count = 0;
-        
-        float cp_prev;
-        {
-             // Check last point
-            float dx = edge_end_x - edge_start_x;
-            float dy = edge_end_y - edge_start_y;
-            float px = poly_x[count-1] - edge_start_x;
-            float py = poly_y[count-1] - edge_start_y;
-            cp_prev = px * dy - py * dx;
+    center_x /= num_of_inter;
+    center_y /= num_of_inter;
+
+    float vs[16];  // 最多 8 个交点
+    for (int i = 0; i < num_of_inter; i++) {
+        float vx = int_pts[2 * i] - center_x;
+        float vy = int_pts[2 * i + 1] - center_y;
+        float d = sqrtf(vx * vx + vy * vy);
+        vx = vx / d;
+        vy = vy / d;
+        if (vy < 0) {
+            vx = -2.0f - vx;
         }
+        vs[i] = vx;
+    }
 
-        for(int i=0; i<count; i++) {
-            float dx = edge_end_x - edge_start_x;
-            float dy = edge_end_y - edge_start_y;
-            float px = poly_x[i] - edge_start_x;
-            float py = poly_y[i] - edge_start_y;
-            float cp_curr = px * dy - py * dx;
-            
-            // Check sign. Standard counter-clockwise vertices have 'inside' as one sign.
-            // Let's assume CCW. Inside is Left. CP > 0.
-            // But let's verify orientation.
-            // rect2 ordered (- -), (+ -) ... etc.
-            // bottom-left -> bottom-right. dx > 0, dy = 0. Normal (0, 1). CP = px * 0 - py * dx = -py*dx.
-            // if py > 0 (inside), CP < 0. So Inside is CP <= 0?
-            // Wait, standard polygon area is positive if CCW.
-            // Let's rely on vertices order.
-            
-            // Actually, simpler logic:
-            // Point p is inside if (p-p1) dot (p2-p1)_orth >= 0 where orth points inwards.
-            // Or just use the sign consistently.
-            
-            // If prev was 'inside' and curr is 'outside', add intersection.
-            // If prev was 'outside' and curr is 'inside', add intersection and curr.
-            // If both inside, add curr.
-            
-            // Let's use a simpler check since we know they are convex logic:
-            // Just use infinite lines clipping.
-            int prev_in = (cp_prev <= 0); // Assuming <=0 is inside given the vertex order (-w/2, -h/2)...
-            int curr_in = (cp_curr <= 0);
-            
-            if (prev_in && curr_in) {
-                 new_poly_x[new_count] = poly_x[i];
-                 new_poly_y[new_count] = poly_y[i];
-                 new_count++;
-            } else if (!prev_in && curr_in) {
-                // Intersection
-                float t = cp_prev / (cp_prev - cp_curr);
-                new_poly_x[new_count] = poly_x[count-1] + t * (poly_x[i] - poly_x[count-1]);
-                new_poly_y[new_count] = poly_y[count-1] + t * (poly_y[i] - poly_y[count-1]);
-                new_count++;
-                new_poly_x[new_count] = poly_x[i];
-                new_poly_y[new_count] = poly_y[i];
-                new_count++;
-            } else if (prev_in && !curr_in) {
-                // Intersection
-                float t = cp_prev / (cp_prev - cp_curr);
-                new_poly_x[new_count] = poly_x[count-1] + t * (poly_x[i] - poly_x[count-1]);
-                new_poly_y[new_count] = poly_y[count-1] + t * (poly_y[i] - poly_y[count-1]);
-                new_count++;
+    // 插入排序
+    for (int i = 1; i < num_of_inter; i++) {
+        if (vs[i - 1] > vs[i]) {
+            float temp = vs[i];
+            float tx = int_pts[2 * i];
+            float ty = int_pts[2 * i + 1];
+            int j = i;
+            while (j > 0 && vs[j - 1] > temp) {
+                vs[j] = vs[j - 1];
+                int_pts[j * 2] = int_pts[j * 2 - 2];
+                int_pts[j * 2 + 1] = int_pts[j * 2 - 1];
+                j--;
             }
-            
-            cp_prev = cp_curr;
-        }
-        count = new_count;
-        for(int k=0; k<count; k++) {
-            poly_x[k] = new_poly_x[k];
-            poly_y[k] = new_poly_y[k];
+            vs[j] = temp;
+            int_pts[j * 2] = tx;
+            int_pts[j * 2 + 1] = ty;
         }
     }
-    
-    return polygon_area(poly_x, poly_y, count);
 }
 
-__global__ void iou3d_kernel(int N, int K, const float* boxes, const float* query_boxes, float* out, int criterion) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N * K) return;
+/*
+ * 线段相交检测
+ * 对应 rotate_iou.py: line_segment_intersection(pts1, pts2, i, j, temp_pts)
+ */
+__device__ __forceinline__ bool line_segment_intersection(
+    const float* pts1, const float* pts2,
+    int i, int j,
+    float* temp_pts
+) {
+    float Ax = pts1[2 * i];
+    float Ay = pts1[2 * i + 1];
+    float Bx = pts1[2 * ((i + 1) % 4)];
+    float By = pts1[2 * ((i + 1) % 4) + 1];
+    float Cx = pts2[2 * j];
+    float Cy = pts2[2 * j + 1];
+    float Dx = pts2[2 * ((j + 1) % 4)];
+    float Dy = pts2[2 * ((j + 1) % 4) + 1];
 
-    int i = idx / K;
-    int j = idx % K;
-
-    // Boxes: x, y, z, h, w, l, ry (7)
-    // Indexes: x=0, y=1, z=2, h=3, w=4, l=5, ry=6
-    // BUT we need to match python code usage:
-    // BEV: x(0), z(2), h(3), l(5), ry(6)
-    // Height: y(1), h(4) ?? No.
-    // In d3_box_overlap: 
-    //   iw = min(b_y, q_y) - max(b_y - b_h, q_y - q_h)
-    //   where b_y = boxes[i, 1], b_h = boxes[i, 4]
-    //   So y(1) is TOP (max y), h(4) is HEIGHT.
-    
-    // Fetch BEV params
-    float box_bev[5];
-    box_bev[0] = boxes[i * 7 + 0]; // x
-    box_bev[1] = boxes[i * 7 + 2]; // z (y in BEV)
-    box_bev[2] = boxes[i * 7 + 3]; // h (width in BEV) - Note: Using 3 as w
-    box_bev[3] = boxes[i * 7 + 5]; // l (height in BEV) - Note: Using 5 as h
-    
-    // Angle conversion: Python side did: -angle * 180 / PI. 
-    // And passed that to Triton.
-    // If we assume `ry` is in radians in the input tensor.
-    // Standard rotation matrix in `devRotateIoU` uses standard radians.
-    // KITTI ry: rotation around Y-axis.
-    // We need to check if 3 and 5 are w and h respectively or h and w.
-    // Usually l is along the heading.
-    // So if angle=0, box extends in l along X? Or Z?
-    // In KITTI, ry=0 -> along X.
-    // If standard rect in `devRotateIoU` assumes w along X, h along Y (before rotation).
-    // Then we should map appropriate dimensions.
-    
-    // Let's assume the Python code logic regarding BEV is correct and replicate it.
-    // Python helper `_format_rotated_boxes`:
-    //   x = box[0], y = box[1] (here z), w = box[2] (here h), h = box[3] (here l)
-    //   angle = -ry * 180 / pi.
-    // Then Triton calculates cos/sin of (angle_deg * pi / 180) => cos(-ry).
-    // So it effectively uses -ry for rotation.
-    // cos(-ry) = cos(ry), sin(-ry) = -sin(ry).
-    
-    // Our devRotateIoU takes radians. So we pass -ry.
-    box_bev[4] = -boxes[i * 7 + 6]; 
-
-    float q_bev[5];
-    q_bev[0] = query_boxes[j * 7 + 0];
-    q_bev[1] = query_boxes[j * 7 + 2];
-    q_bev[2] = query_boxes[j * 7 + 3];
-    q_bev[3] = query_boxes[j * 7 + 5];
-    q_bev[4] = -query_boxes[j * 7 + 6];
-    
-    float bev_inter_area = devRotateIoU(box_bev, q_bev);
-    
-    // Height overlap
-    float b_y_max = boxes[i * 7 + 1];
-    float b_h_dim = boxes[i * 7 + 4]; // The dimension used for height overlap
-    float b_y_min = b_y_max - b_h_dim;
-    
-    float q_y_max = query_boxes[j * 7 + 1];
-    float q_h_dim = query_boxes[j * 7 + 4];
-    float q_y_min = q_y_max - q_h_dim;
-    
-    float iw = min(b_y_max, q_y_max) - max(b_y_min, q_y_min);
-    
-    float intersection_3d = 0.0f;
-    if (iw > 0) {
-        intersection_3d = bev_inter_area * iw;
+    float BA0 = Bx - Ax;
+    float BA1 = By - Ay;
+    float DA0 = Dx - Ax;
+    float CA0 = Cx - Ax;
+    float DA1 = Dy - Ay;
+    float CA1 = Cy - Ay;
+    bool acd = DA1 * CA0 > CA1 * DA0;
+    bool bcd = (Dy - By) * (Cx - Bx) > (Cy - By) * (Dx - Bx);
+    if (acd != bcd) {
+        bool abc = CA1 * BA0 > BA1 * CA0;
+        bool abd = DA1 * BA0 > BA1 * DA0;
+        if (abc != abd) {
+            float DC0 = Dx - Cx;
+            float DC1 = Dy - Cy;
+            float ABBA = Ax * By - Bx * Ay;
+            float CDDC = Cx * Dy - Dx * Cy;
+            float DH = BA1 * DC0 - BA0 * DC1;
+            float Ddx = ABBA * DC0 - BA0 * CDDC;
+            float Ddy = ABBA * DC1 - BA1 * CDDC;
+            temp_pts[0] = Ddx / DH;
+            temp_pts[1] = Ddy / DH;
+            return true;
+        }
     }
-    
-    // Now handle criterion
-    // criterion == -1: IoU
-    // criterion == 0: Intersection / Area1 (Self)
-    // criterion == 1: Intersection / Area2 (Query)
-    // criterion == 2: Intersection
-    
-    if (criterion == 2) {
-        out[idx] = intersection_3d;
+    return false;
+}
+
+/*
+ * 点在四边形内检测
+ * 对应 rotate_iou.py: point_in_quadrilateral(pt_x, pt_y, corners)
+ */
+__device__ __forceinline__ bool point_in_quadrilateral(
+    float pt_x, float pt_y, const float* corners
+) {
+    float ab0 = corners[2] - corners[0];
+    float ab1 = corners[3] - corners[1];
+    float ad0 = corners[6] - corners[0];
+    float ad1 = corners[7] - corners[1];
+    float ap0 = pt_x - corners[0];
+    float ap1 = pt_y - corners[1];
+
+    float abab = ab0 * ab0 + ab1 * ab1;
+    float abap = ab0 * ap0 + ab1 * ap1;
+    float adad = ad0 * ad0 + ad1 * ad1;
+    float adap = ad0 * ap0 + ad1 * ap1;
+
+    return abab >= abap && abap >= 0 && adad >= adap && adap >= 0;
+}
+
+/*
+ * 四边形交叠顶点收集
+ * 对应 rotate_iou.py: quadrilateral_intersection(pts1, pts2, int_pts)
+ */
+__device__ int quadrilateral_intersection(
+    const float* pts1, const float* pts2, float* int_pts
+) {
+    int num_of_inter = 0;
+    for (int i = 0; i < 4; i++) {
+        if (point_in_quadrilateral(pts1[2 * i], pts1[2 * i + 1], pts2)) {
+            int_pts[num_of_inter * 2] = pts1[2 * i];
+            int_pts[num_of_inter * 2 + 1] = pts1[2 * i + 1];
+            num_of_inter++;
+        }
+        if (point_in_quadrilateral(pts2[2 * i], pts2[2 * i + 1], pts1)) {
+            int_pts[num_of_inter * 2] = pts2[2 * i];
+            int_pts[num_of_inter * 2 + 1] = pts2[2 * i + 1];
+            num_of_inter++;
+        }
+    }
+    float temp_pts[2];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            if (line_segment_intersection(pts1, pts2, i, j, temp_pts)) {
+                int_pts[num_of_inter * 2] = temp_pts[0];
+                int_pts[num_of_inter * 2 + 1] = temp_pts[1];
+                num_of_inter++;
+            }
+        }
+    }
+    return num_of_inter;
+}
+
+/*
+ * 旋转框 → 4 个顶点 (顺时针)
+ * 对应 rotate_iou.py: rbbox_to_corners(corners, rbbox)
+ */
+__device__ __forceinline__ void rbbox_to_corners(float* corners, const float* rbbox) {
+    float angle = rbbox[4];
+    float a_cos = cosf(angle);
+    float a_sin = sinf(angle);
+    float center_x = rbbox[0];
+    float center_y = rbbox[1];
+    float x_d = rbbox[2];
+    float y_d = rbbox[3];
+
+    float corners_x[4] = {-x_d / 2, -x_d / 2, x_d / 2, x_d / 2};
+    float corners_y[4] = {-y_d / 2, y_d / 2, y_d / 2, -y_d / 2};
+
+    for (int i = 0; i < 4; i++) {
+        corners[2 * i]     = a_cos * corners_x[i] + a_sin * corners_y[i] + center_x;
+        corners[2 * i + 1] = -a_sin * corners_x[i] + a_cos * corners_y[i] + center_y;
+    }
+}
+
+/*
+ * 两个旋转框的交叠面积
+ * 对应 rotate_iou.py: inter(rbbox1, rbbox2)
+ */
+__device__ __forceinline__ float inter_area(const float* rbbox1, const float* rbbox2) {
+    float corners1[8], corners2[8];
+    float intersection_corners[16];  // 最多 8 个交点
+
+    rbbox_to_corners(corners1, rbbox1);
+    rbbox_to_corners(corners2, rbbox2);
+
+    int num_intersection = quadrilateral_intersection(corners1, corners2, intersection_corners);
+    sort_vertex_in_convex_polygon(intersection_corners, num_intersection);
+
+    return polygon_area_fan(intersection_corners, num_intersection);
+}
+
+/*
+ * 旋转框 IoU (带 criterion 参数)
+ * 对应 rotate_iou.py: devRotateIoUEval(rbox1, rbox2, criterion)
+ *
+ * criterion:
+ *   -1: IoU = intersection / union
+ *    0: intersection / area1
+ *    1: intersection / area2
+ *    2: 仅返回交叠面积
+ */
+__device__ __forceinline__ float devRotateIoUEval(
+    const float* rbox1, const float* rbox2, int criterion
+) {
+    float area1 = rbox1[2] * rbox1[3];
+    float area2 = rbox2[2] * rbox2[3];
+    float area_intersection = inter_area(rbox1, rbox2);
+
+    if (criterion == -1) {
+        float ua = area1 + area2 - area_intersection;
+        return (ua > 0.0f) ? area_intersection / ua : 0.0f;
+    } else if (criterion == 0) {
+        return (area1 > 0.0f) ? area_intersection / area1 : 0.0f;
+    } else if (criterion == 1) {
+        return (area2 > 0.0f) ? area_intersection / area2 : 0.0f;
     } else {
-        float area1 = boxes[i * 7 + 3] * boxes[i * 7 + 4] * boxes[i * 7 + 5];
-        float area2 = query_boxes[j * 7 + 3] * query_boxes[j * 7 + 4] * query_boxes[j * 7 + 5];
-        
-        float ua = area1 + area2 - intersection_3d;
-        
-        if (criterion == -1) {
-             out[idx] = (ua > 0) ? intersection_3d / ua : 0.0f;
-        } else if (criterion == 0) {
-             out[idx] = (area1 > 0) ? intersection_3d / area1 : 0.0f;
-        } else if (criterion == 1) {
-             out[idx] = (area2 > 0) ? intersection_3d / area2 : 0.0f;
+        return area_intersection;
+    }
+}
+
+/* ═══════════════════ CUDA Kernels ═══════════════════ */
+
+/*
+ * 旋转框 BEV IoU 内核
+ * 对应 rotate_iou.py: rotate_iou_kernel_eval
+ *
+ * 使用共享内存分块处理，与参考实现的 block 策略完全一致。
+ * 输入: dev_boxes (N*5), dev_query_boxes (K*5), 格式: [cx, cy, w, h, angle]
+ * 输出: dev_iou (N*K), 行 = boxes, 列 = query_boxes
+ */
+__global__ void rotate_iou_kernel_eval(
+    int64_t N, int64_t K,
+    const float* dev_boxes,
+    const float* dev_query_boxes,
+    float* dev_iou,
+    int criterion
+) {
+    const int threadsPerBlock = THREADS_PER_BLOCK;
+    int row_start = blockIdx.x;
+    int col_start = blockIdx.y;
+    int tx = threadIdx.x;
+
+    int row_size = min((int64_t)threadsPerBlock, N - (int64_t)row_start * threadsPerBlock);
+    int col_size = min((int64_t)threadsPerBlock, K - (int64_t)col_start * threadsPerBlock);
+
+    __shared__ float block_boxes[THREADS_PER_BLOCK * 5];
+    __shared__ float block_qboxes[THREADS_PER_BLOCK * 5];
+
+    int dev_query_box_idx = threadsPerBlock * col_start + tx;
+    int dev_box_idx = threadsPerBlock * row_start + tx;
+
+    if (tx < col_size) {
+        block_qboxes[tx * 5 + 0] = dev_query_boxes[dev_query_box_idx * 5 + 0];
+        block_qboxes[tx * 5 + 1] = dev_query_boxes[dev_query_box_idx * 5 + 1];
+        block_qboxes[tx * 5 + 2] = dev_query_boxes[dev_query_box_idx * 5 + 2];
+        block_qboxes[tx * 5 + 3] = dev_query_boxes[dev_query_box_idx * 5 + 3];
+        block_qboxes[tx * 5 + 4] = dev_query_boxes[dev_query_box_idx * 5 + 4];
+    }
+    if (tx < row_size) {
+        block_boxes[tx * 5 + 0] = dev_boxes[dev_box_idx * 5 + 0];
+        block_boxes[tx * 5 + 1] = dev_boxes[dev_box_idx * 5 + 1];
+        block_boxes[tx * 5 + 2] = dev_boxes[dev_box_idx * 5 + 2];
+        block_boxes[tx * 5 + 3] = dev_boxes[dev_box_idx * 5 + 3];
+        block_boxes[tx * 5 + 4] = dev_boxes[dev_box_idx * 5 + 4];
+    }
+    __syncthreads();
+
+    if (tx < row_size) {
+        for (int i = 0; i < col_size; i++) {
+            int64_t offset = (int64_t)row_start * threadsPerBlock * K
+                           + (int64_t)col_start * threadsPerBlock
+                           + (int64_t)tx * K + i;
+            // 注意: 参考实现调用 devRotateIoUEval(qbox, box, ...)
+            // 即 rbox1 = query_box, rbox2 = box
+            dev_iou[offset] = devRotateIoUEval(
+                &block_qboxes[i * 5],
+                &block_boxes[tx * 5],
+                criterion
+            );
         }
     }
 }
 
-
-// C++ Interface
-void boxes_iou3d_gpu(at::Tensor boxes, at::Tensor query_boxes, at::Tensor out, int criterion) {
-    CHECK_INPUT(boxes);
-    CHECK_INPUT(query_boxes);
-    CHECK_INPUT(out);
-    
-    int N = boxes.size(0);
-    int K = query_boxes.size(0);
-    
-    int threads = 1024;
-    int blocks = DIVUP(N * K, threads);
-    
-    iou3d_kernel<<<blocks, threads>>>(N, K, 
-        boxes.data_ptr<float>(), 
-        query_boxes.data_ptr<float>(), 
-        out.data_ptr<float>(), 
-        criterion);
-    
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("error in iou3d_kernel: %s\n", cudaGetErrorString(err));
-    }
-}
-
-// Separate kernel for BEV IoU/Intersection Only (matches rotated_iou_gpu functionality but in CUDA)
-__global__ void iou_bev_kernel(int N, int K, const float* boxes, const float* query_boxes, float* out, int criterion) {
+/*
+ * 2D 轴对齐框 IoU 内核
+ * 对应 eval.py: image_box_overlap
+ */
+__global__ void iou2d_kernel(
+    int N, int K,
+    const float* boxes, const float* query_boxes,
+    float* out, int criterion
+) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N * K) return;
 
-    int i = idx / K;
-    int j = idx % K;
-    
-    // Boxes assumed to be (N, 5): x, y, w, h, angle
-    // Just strict BEV calculation
-    float box_bev[5];
-    // Copy directly. Assumes user handled format already.
-    box_bev[0] = boxes[i*5+0]; box_bev[1] = boxes[i*5+1]; box_bev[2] = boxes[i*5+2]; box_bev[3] = boxes[i*5+3]; 
-    // Assumes input is radians. And applies sign flip to match KITTI/standard conversion if needed.
-    // rotate_iou_gpu_eval converts rad clockwise to deg ccw (-angle).
-    // so we pass -angle (rad) here.
-    box_bev[4] = -boxes[i*5+4];
+    int n = idx / K;
+    int k = idx % K;
 
-    float q_bev[5];
-    q_bev[0] = query_boxes[j*5+0]; q_bev[1] = query_boxes[j*5+1]; q_bev[2] = query_boxes[j*5+2]; q_bev[3] = query_boxes[j*5+3]; 
-    q_bev[4] = -query_boxes[j*5+4];
-    
-    float intersection = devRotateIoU(box_bev, q_bev);
-    
-    if (criterion == 2) {
-        out[idx] = intersection;
+    float b_x1 = boxes[n * 4 + 0];
+    float b_y1 = boxes[n * 4 + 1];
+    float b_x2 = boxes[n * 4 + 2];
+    float b_y2 = boxes[n * 4 + 3];
+
+    float q_x1 = query_boxes[k * 4 + 0];
+    float q_y1 = query_boxes[k * 4 + 1];
+    float q_x2 = query_boxes[k * 4 + 2];
+    float q_y2 = query_boxes[k * 4 + 3];
+
+    float iw = fminf(b_x2, q_x2) - fmaxf(b_x1, q_x1);
+    if (iw <= 0) { out[idx] = 0.0f; return; }
+    float ih = fminf(b_y2, q_y2) - fmaxf(b_y1, q_y1);
+    if (ih <= 0) { out[idx] = 0.0f; return; }
+
+    float inter = iw * ih;
+    float qbox_area = (q_x2 - q_x1) * (q_y2 - q_y1);
+
+    if (criterion == -1) {
+        float ua = (b_x2 - b_x1) * (b_y2 - b_y1) + qbox_area - inter;
+        out[idx] = (ua > 0.0f) ? inter / ua : 0.0f;
+    } else if (criterion == 0) {
+        float box_area = (b_x2 - b_x1) * (b_y2 - b_y1);
+        out[idx] = (box_area > 0.0f) ? inter / box_area : 0.0f;
+    } else if (criterion == 1) {
+        out[idx] = (qbox_area > 0.0f) ? inter / qbox_area : 0.0f;
     } else {
-        float area1 = box_bev[2] * box_bev[3];
-        float area2 = q_bev[2] * q_bev[3];
-        float ua = area1 + area2 - intersection;
-         if (criterion == -1) {
-             out[idx] = (ua > 0) ? intersection / ua : 0.0f;
-        } else if (criterion == 0) {
-             out[idx] = (area1 > 0) ? intersection / area1 : 0.0f;
-        } else if (criterion == 1) {
-             out[idx] = (area2 > 0) ? intersection / area2 : 0.0f;
-        }
-    }
-}
-
-void boxes_iou_bev_gpu(at::Tensor boxes, at::Tensor query_boxes, at::Tensor out, int criterion) {
-    CHECK_INPUT(boxes);
-    CHECK_INPUT(query_boxes);
-    CHECK_INPUT(out);
-    
-    int N = boxes.size(0);
-    int K = query_boxes.size(0);
-    
-    int threads = 1024;
-    int blocks = DIVUP(N * K, threads);
-    
-    iou_bev_kernel<<<blocks, threads>>>(N, K, 
-        boxes.data_ptr<float>(), 
-        query_boxes.data_ptr<float>(), 
-        out.data_ptr<float>(), 
-        criterion);
-}
-
-__global__ void iou2d_kernel(int N, int K, const float* boxes, const float* query_boxes, float* out, int criterion) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N * K) return;
-
-    int i = idx / K;
-    int j = idx % K;
-
-    // boxes: (N, 4) x1, y1, x2, y2
-    // query_boxes: (K, 4)
-    
-    float b_x1 = boxes[i*4+0];
-    float b_y1 = boxes[i*4+1];
-    float b_x2 = boxes[i*4+2];
-    float b_y2 = boxes[i*4+3];
-
-    float q_x1 = query_boxes[j*4+0];
-    float q_y1 = query_boxes[j*4+1];
-    float q_x2 = query_boxes[j*4+2];
-    float q_y2 = query_boxes[j*4+3];
-
-    float iw = min(b_x2, q_x2) - max(b_x1, q_x1);
-    float ih = min(b_y2, q_y2) - max(b_y1, q_y1);
-    
-    float inter = 0.0f;
-    if (iw > 0 && ih > 0) {
-        inter = iw * ih;
-    }
-    
-    if (criterion == 2) {
         out[idx] = inter;
-    } else {
-        float area1 = (b_x2 - b_x1) * (b_y2 - b_y1);
-        float area2 = (q_x2 - q_x1) * (q_y2 - q_y1);
-        float ua = area1 + area2 - inter;
-        
-        if (criterion == -1) {
-             out[idx] = (ua > 0) ? inter / ua : 0.0f;
-        } else if (criterion == 0) {
-             out[idx] = (area1 > 0) ? inter / area1 : 0.0f;
-        } else if (criterion == 1) {
-             out[idx] = (area2 > 0) ? inter / area2 : 0.0f;
-        }
     }
 }
 
-void boxes_iou2d_gpu(at::Tensor boxes, at::Tensor query_boxes, at::Tensor out, int criterion) {
-    CHECK_INPUT(boxes);
-    CHECK_INPUT(query_boxes);
-    CHECK_INPUT(out);
-    
-    int N = boxes.size(0);
-    int K = query_boxes.size(0);
-    
-    int threads = 1024;
-    int blocks = DIVUP(N * K, threads);
-    
-    iou2d_kernel<<<blocks, threads>>>(N, K, 
-        boxes.data_ptr<float>(), 
-        query_boxes.data_ptr<float>(), 
-        out.data_ptr<float>(), 
-        criterion);
+/*
+ * 3D 框 IoU 内核
+ * 对应 eval.py: d3_box_overlap_kernel + d3_box_overlap
+ *
+ * 输入框格式: [x, y, z, l, h, w, ry] (7 个元素)
+ *   - (x, z) 为 BEV 坐标
+ *   - l, w 为 BEV 尺寸
+ *   - y 为高度方向最大值 (底部)
+ *   - h 为高度维度
+ *   - ry 为绕 Y 轴旋转角
+ *
+ * 算法:
+ *   1. 提取 BEV 参数: [x, z, l, w, ry]
+ *   2. 计算 BEV 交叠面积 (criterion=2)
+ *   3. 计算高度交叠 iw = min(y1, y2) - max(y1-h1, y2-h2)
+ *   4. 3D 交叠 = BEV交叠 × 高度交叠
+ *   5. 按 criterion 计算最终值
+ */
+__global__ void iou3d_kernel(
+    int N, int K,
+    const float* boxes, const float* query_boxes,
+    float* out, int criterion
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N * K) return;
+
+    int i = idx / K;
+    int j = idx % K;
+
+    // 提取 BEV 参数: [x, z, l, w, ry]
+    float box_bev[5] = {
+        boxes[i * 7 + 0],      // x
+        boxes[i * 7 + 2],      // z
+        boxes[i * 7 + 3],      // l (对应 dimensions[:, 0])
+        boxes[i * 7 + 5],      // w (对应 dimensions[:, 2])
+        boxes[i * 7 + 6]       // ry
+    };
+
+    float q_bev[5] = {
+        query_boxes[j * 7 + 0],
+        query_boxes[j * 7 + 2],
+        query_boxes[j * 7 + 3],
+        query_boxes[j * 7 + 5],
+        query_boxes[j * 7 + 6]
+    };
+
+    // BEV 交叠面积 (criterion=2 → 仅面积)
+    float bev_inter = devRotateIoUEval(box_bev, q_bev, 2);
+
+    // 高度交叠
+    float b_y_max = boxes[i * 7 + 1];
+    float b_h = boxes[i * 7 + 4];
+    float q_y_max = query_boxes[j * 7 + 1];
+    float q_h = query_boxes[j * 7 + 4];
+
+    float iw = fminf(b_y_max, q_y_max) - fmaxf(b_y_max - b_h, q_y_max - q_h);
+
+    float intersection_3d = 0.0f;
+    if (iw > 0 && bev_inter > 0) {
+        intersection_3d = bev_inter * iw;
+    }
+
+    // 按 criterion 计算
+    if (intersection_3d <= 0.0f) {
+        out[idx] = 0.0f;
+        return;
+    }
+
+    float area1 = boxes[i * 7 + 3] * boxes[i * 7 + 4] * boxes[i * 7 + 5];
+    float area2 = query_boxes[j * 7 + 3] * query_boxes[j * 7 + 4] * query_boxes[j * 7 + 5];
+
+    if (criterion == -1) {
+        float ua = area1 + area2 - intersection_3d;
+        out[idx] = (ua > 0.0f) ? intersection_3d / ua : 0.0f;
+    } else if (criterion == 0) {
+        out[idx] = (area1 > 0.0f) ? intersection_3d / area1 : 0.0f;
+    } else if (criterion == 1) {
+        out[idx] = (area2 > 0.0f) ? intersection_3d / area2 : 0.0f;
+    } else {
+        out[idx] = intersection_3d;
+    }
 }
 
+
+/* ═══════════════════ C++ 调用接口 ═══════════════════ */
+
+void launch_rotate_iou_kernel(
+    int64_t N, int64_t K,
+    const float* boxes, const float* query_boxes,
+    float* iou, int criterion
+) {
+    if (N == 0 || K == 0) return;
+    dim3 blocks(DIVUP(N, THREADS_PER_BLOCK), DIVUP(K, THREADS_PER_BLOCK));
+    dim3 threads(THREADS_PER_BLOCK);
+    rotate_iou_kernel_eval<<<blocks, threads>>>(N, K, boxes, query_boxes, iou, criterion);
+    cudaDeviceSynchronize();
+}
+
+void launch_iou2d_kernel(
+    int N, int K,
+    const float* boxes, const float* query_boxes,
+    float* out, int criterion
+) {
+    if (N == 0 || K == 0) return;
+    int threads = 1024;
+    int blocks = DIVUP(N * K, threads);
+    iou2d_kernel<<<blocks, threads>>>(N, K, boxes, query_boxes, out, criterion);
+    cudaDeviceSynchronize();
+}
+
+void launch_iou3d_kernel(
+    int N, int K,
+    const float* boxes, const float* query_boxes,
+    float* out, int criterion
+) {
+    if (N == 0 || K == 0) return;
+    int threads = 1024;
+    int blocks = DIVUP(N * K, threads);
+    iou3d_kernel<<<blocks, threads>>>(N, K, boxes, query_boxes, out, criterion);
+    cudaDeviceSynchronize();
+}
