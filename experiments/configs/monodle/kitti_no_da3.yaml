@@ -14,7 +14,7 @@ dataset:
   random_crop: 0.5
   scale: 0.4
   shift: 0.1
-  use_da3_depth: True
+  use_da3_depth: False
 
 model:
   type: 'centernet3d'
@@ -34,19 +34,30 @@ lr_scheduler:
 
 trainer:
   max_epoch: 140
-  gpu_ids: 0,1,2,3,4,5,6,7
+  gpu_ids: 0, 1
   save_frequency: 10 # checkpoint save interval (in epoch)
+  find_unused_parameters: True
   # resume_model: 'checkpoints/checkpoint_epoch_70.pth'
 
+# Tells train_val_ddp.py how to auto-compute equivalent DDP settings
+# from the original DP config. If this section is present, batch_size
+# and lr above will be OVERRIDDEN to match the DP reference exactly.
+distributed:
+  enabled: true
+  dp_reference:
+    total_batch_size: 16
+    lr: 0.00125
+    num_gpus: 2
+
 distill:
-  lambda: 0.5
-  loss_type: 'l1'       # 'l1' or 'silog'
+  lambda: 0.0
+  loss_type: 'l1'
   foreground_weight: 5.0
 
 
 tester:
   type: *dataset_type
   mode: single   # 'single' or 'all'
-  checkpoint: 'checkpoints/checkpoint_epoch_140.pth'  # for 'single' mode
-  checkpoints_dir: 'checkpoints'  # for 'all' model
+  checkpoint: 'experiments/results/monodle/kitti_no_da3/<timestamp>/checkpoints/checkpoint_epoch_140.pth'  # for 'single' mode, replace <timestamp>
+  checkpoints_dir: 'experiments/results/monodle/kitti_no_da3/<timestamp>/checkpoints'  # for 'all' model, replace <timestamp>
   threshold: 0.2  # confidence filter

@@ -39,7 +39,7 @@ import datetime
 
 import torch
 
-from lib.helpers.model_helper import build_model
+from lib.helpers.model_helper import build_model, log_model_complexity
 from lib.helpers.dataloader_helper import build_dataloader
 from lib.helpers.optimizer_helper import build_optimizer
 from lib.helpers.scheduler_helper import build_lr_scheduler
@@ -66,6 +66,25 @@ parser.add_argument('-e', '--evaluate_only', action='store_true', default=False,
 args = parser.parse_args()
 
 
+def _build_experiment_paths(config_path, run_tag=None):
+    ts = run_tag or datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    configs_root = os.path.join(ROOT_DIR, 'experiments', 'configs')
+    config_abs = os.path.abspath(config_path)
+
+    if os.path.commonpath([config_abs, configs_root]) == configs_root:
+        rel_no_ext = os.path.splitext(os.path.relpath(config_abs, configs_root))[0]
+    else:
+        rel_no_ext = os.path.splitext(os.path.basename(config_abs))[0]
+
+    run_dir = os.path.join(ROOT_DIR, 'experiments', 'results', rel_no_ext, ts)
+    return {
+        'run_dir': run_dir,
+        'log_dir': os.path.join(run_dir, 'logs'),
+        'ckpt_dir': os.path.join(run_dir, 'checkpoints'),
+        'output_dir': os.path.join(run_dir, 'outputs'),
+    }
+
+
 def main():
     # ---- distributed init ---------------------------------------------------
     setup_distributed()
@@ -75,6 +94,32 @@ def main():
     assert os.path.exists(args.config)
     cfg = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
 
+    # Build one shared run directory for all ranks.
+    # Without synchronization, each rank may cross a second boundary and create
+    # different timestamp folders for the same torchrun invocation.
+    run_tag = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') if is_main_process() else None
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        run_tag_holder = [run_tag]
+        torch.distributed.broadcast_object_list(run_tag_holder, src=0)
+        run_tag = run_tag_holder[0]
+
+    exp_paths = _build_experiment_paths(args.config, run_tag=run_tag)
+    os.makedirs(exp_paths['log_dir'], exist_ok=True)
+    os.makedirs(exp_paths['ckpt_dir'], exist_ok=True)
+    os.makedirs(exp_paths['output_dir'], exist_ok=True)
+
+    cfg.setdefault('trainer', {})
+    cfg.setdefault('tester', {})
+    cfg['trainer']['checkpoints_dir'] = exp_paths['ckpt_dir']
+    cfg['tester']['output_dir'] = exp_paths['output_dir']
+
+    if not args.evaluate_only:
+        cfg['tester']['checkpoint'] = os.path.join(
+            exp_paths['ckpt_dir'],
+            'checkpoint_epoch_%d.pth' % cfg['trainer'].get('max_epoch', 140)
+        )
+        cfg['tester']['checkpoints_dir'] = exp_paths['ckpt_dir']
+
     # resolve root_dir relative to the project root when given as a relative path
     root_dir = cfg['dataset'].get('root_dir', 'data/KITTI')
     if not os.path.isabs(root_dir):
@@ -83,9 +128,10 @@ def main():
     set_random_seed(cfg.get('random_seed', 444) + rank)
 
     # ---- logging (rank-0 only) -----------------------------------------------
-    log_file = 'train_%s.log' % datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(exp_paths['log_dir'], 'train.log')
     if is_main_process():
         logger = create_logger(log_file)
+        logger.info('Experiment dir: %s' % exp_paths['run_dir'])
     else:
         # non-main ranks get a silent logger
         import logging
@@ -129,6 +175,11 @@ def main():
 
     # ---- build model ---------------------------------------------------------
     model = build_model(cfg['model'])
+    if is_main_process():
+        profile_resolution = tuple(train_loader.dataset.resolution[::-1].tolist())
+        log_model_complexity(model, logger=logger, input_resolution=profile_resolution)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
 
     if args.evaluate_only:
         if is_main_process():

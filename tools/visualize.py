@@ -4,7 +4,7 @@
     cd monodle_modern
     python tools/visualize.py \
         --data_dir ../../data/KITTI \
-        --pred_dir experiments/example/outputs/data \
+        --pred_dir experiments/runs/outputs/data \
         --split val \
         --num_images 10 \
         --output_dir vis_output
@@ -251,7 +251,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='MonoDLE KITTI Visualization')
     parser.add_argument('--data_dir', type=str, default='../../data/KITTI',
                         help='KITTI 数据集根目录')
-    parser.add_argument('--pred_dir', type=str, default='experiments/example/outputs/data',
+    parser.add_argument('--pred_dir', type=str, default='experiments/runs/outputs/data',
                         help='预测结果目录 (KITTI 格式 txt)')
     parser.add_argument('--split', type=str, default='val',
                         help='数据集切分 (train/val/test)')
