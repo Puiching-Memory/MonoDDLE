@@ -1,10 +1,3 @@
-"""
-DLA (Deep Layer Aggregation) Backbone
-=====================================
-
-Original implementation from MonoDLE (https://github.com/xinzhuma/monodle).
-Pretrained weights from http://dl.yf.io/dla/models.
-"""
 import os
 import math
 
@@ -105,6 +98,8 @@ class BottleneckX(nn.Module):
     def __init__(self, inplanes, planes, stride=1, dilation=1):
         super(BottleneckX, self).__init__()
         cardinality = BottleneckX.cardinality
+        # dim = int(math.floor(planes * (BottleneckV5.expansion / 64.0)))
+        # bottle_planes = dim * cardinality
         bottle_planes = planes * cardinality // 32
         self.conv1 = nn.Conv2d(inplanes, bottle_planes,
                                kernel_size=1, bias=False)
@@ -408,3 +403,8 @@ def dla169(pretrained=False, **kwargs):  # DLA-169
     if pretrained:
         model.load_pretrained_model(data='imagenet', name='dla169', hash='0914e092')
     return model
+
+
+if __name__ == '__main__':
+    net = dla169(pretrained=True)
+    print(net)

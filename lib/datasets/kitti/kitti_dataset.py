@@ -1,6 +1,6 @@
 import os
-import json
 import numpy as np
+import cv2
 import torch.utils.data as data
 from PIL import Image
 
@@ -11,8 +11,9 @@ from lib.datasets.kitti.kitti_utils import get_objects_from_label
 from lib.datasets.kitti.kitti_utils import Calibration
 from lib.datasets.kitti.kitti_utils import get_affine_transform
 from lib.datasets.kitti.kitti_utils import affine_transform
-from lib.datasets.kitti.kitti_eval import get_official_eval_result, get_distance_eval_result
-import lib.datasets.kitti.kitti_eval.utils as kitti
+from lib.datasets.kitti.kitti_eval_python.eval import get_official_eval_result
+from lib.datasets.kitti.kitti_eval_python.eval import get_distance_eval_result
+import lib.datasets.kitti.kitti_eval_python.kitti_common as kitti
 
 
 class KITTI_Dataset(data.Dataset):
@@ -71,6 +72,10 @@ class KITTI_Dataset(data.Dataset):
         # others
         self.downsample = 4
 
+        # DA3 depth distillation
+        self.use_da3_depth = cfg.get('use_da3_depth', False)
+        self.da3_depth_dir = os.path.join(self.root_dir, 'DA3_depth_results')
+
 
 
     def get_image(self, idx):
@@ -91,77 +96,24 @@ class KITTI_Dataset(data.Dataset):
         return Calibration(calib_file)
 
 
-    def eval(self, results_dir, logger, epoch=None, eval_only=False):
+    def get_da3_depth(self, idx):
+        depth_file = os.path.join(self.da3_depth_dir, '%06d.npz' % idx)
+        if os.path.exists(depth_file):
+            return np.load(depth_file)['depth']
+        return None
+
+    def eval(self, results_dir, logger):
         logger.info("==> Loading detections and GTs...")
         img_ids = [int(id) for id in self.idx_list]
-        dt_annos = kitti.get_label_annos(results_dir, img_ids)
+        dt_annos = kitti.get_label_annos(results_dir)
         gt_annos = kitti.get_label_annos(self.label_dir, img_ids)
 
         test_id = {'Car': 0, 'Pedestrian':1, 'Cyclist': 2}
 
         logger.info('==> Evaluating (official) ...')
-        all_metrics = {}
-
         for category in self.writelist:
-            if category not in test_id:
-                continue
-            results_str, results_dict, rich_data = get_official_eval_result(gt_annos, dt_annos, test_id[category])
-            all_metrics.update(results_dict)
-
-            # Rich print + eval history comparison
-            prev_rich_data = None
-            try:
-                from lib.helpers.logger_helper import print_kitti_eval_results, save_eval_to_csv
-
-                epoch_dir = os.path.dirname(results_dir)
-                viz_dir = os.path.dirname(epoch_dir)
-
-                if eval_only:
-                    last_result_path = os.path.join(viz_dir, "eval_only_result.json")
-                    if not os.path.exists(viz_dir):
-                        last_result_path = os.path.join(epoch_dir, "eval_only_result.json")
-                    csv_name = "eval_only.csv"
-                else:
-                    last_result_path = os.path.join(viz_dir, "last_eval_result.json")
-                    if not os.path.exists(viz_dir):
-                        last_result_path = os.path.join(epoch_dir, "last_eval_result.json")
-                    csv_name = "eval_results.csv"
-
-                if os.path.exists(last_result_path):
-                    with open(last_result_path, "r") as f:
-                        prev_rich_data = json.load(f)
-
-                print_kitti_eval_results(rich_data, prev_rich_data)
-
-                current_disk_data = []
-                try:
-                    if os.path.exists(last_result_path):
-                        with open(last_result_path, "r") as f:
-                            loaded = json.load(f)
-                            if isinstance(loaded, list):
-                                current_disk_data = [
-                                    d for d in loaded
-                                    if isinstance(d, dict) and d.get("class_name") != rich_data[0]["class_name"]
-                                ]
-                except Exception:
-                    current_disk_data = []
-
-                current_disk_data.extend(rich_data)
-                with open(last_result_path, "w") as f:
-                    json.dump(current_disk_data, f,
-                              default=lambda o: o.tolist() if isinstance(o, np.ndarray) else None)
-
-                csv_path = os.path.join(viz_dir, csv_name)
-                if not os.path.isdir(viz_dir):
-                    csv_path = os.path.join(epoch_dir, csv_name)
-                save_eval_to_csv(rich_data, csv_path, model_name="monodle", epoch=epoch)
-
-            except ImportError:
-                logger.info(results_str)
-            except Exception as e:
-                logger.warning("Failed to save evaluation results: %s" % str(e))
-
-        return all_metrics
+            results_str, results_dict = get_official_eval_result(gt_annos, dt_annos, test_id[category])
+            logger.info(results_str)
 
 
     def __len__(self):
@@ -335,7 +287,67 @@ class KITTI_Dataset(data.Dataset):
                    'heading_res': heading_res,
                    'mask_2d': mask_2d,
                    'mask_3d': mask_3d}
+
+        if self.use_da3_depth:
+            da3_raw = self.get_da3_depth(index)
+            if da3_raw is not None:
+                da3_depth_map = cv2.resize(
+                    da3_raw, (img_size[0], img_size[1]),
+                    interpolation=cv2.INTER_LINEAR)
+                if random_flip_flag:
+                    da3_depth_map = da3_depth_map[:, ::-1].copy()
+                da3_depth_map = cv2.warpAffine(
+                    da3_depth_map, trans,
+                    tuple(self.resolution.tolist()),
+                    flags=cv2.INTER_LINEAR,
+                    borderValue=0)
+                da3_depth_map = cv2.resize(
+                    da3_depth_map,
+                    (features_size[0], features_size[1]),
+                    interpolation=cv2.INTER_LINEAR)
+                da3_depth_mask = (da3_depth_map > 0).astype(np.float32)
+            else:
+                da3_depth_map = np.zeros(
+                    (features_size[1], features_size[0]), dtype=np.float32)
+                da3_depth_mask = np.zeros(
+                    (features_size[1], features_size[0]), dtype=np.float32)
+
+            targets['da3_depth'] = da3_depth_map[np.newaxis, ...]
+            targets['da3_depth_mask'] = da3_depth_mask[np.newaxis, ...]
         info = {'img_id': index,
                 'img_size': img_size,
                 'bbox_downsample_ratio': img_size/features_size}
         return inputs, targets, info
+
+
+
+
+if __name__ == '__main__':
+    from torch.utils.data import DataLoader
+    cfg = {'root_dir': '../../../data/KITTI',
+           'random_flip':0.0, 'random_crop':1.0, 'scale':0.8, 'shift':0.1, 'use_dontcare': False,
+           'class_merging': False, 'writelist':['Pedestrian', 'Car', 'Cyclist'], 'use_3d_center':False}
+    dataset = KITTI_Dataset('train', cfg)
+    dataloader = DataLoader(dataset=dataset, batch_size=1)
+    print(dataset.writelist)
+
+    for batch_idx, (inputs, targets, info) in enumerate(dataloader):
+        # test image
+        img = inputs[0].numpy().transpose(1, 2, 0)
+        img = (img * dataset.std + dataset.mean) * 255
+        img = Image.fromarray(img.astype(np.uint8))
+        img.show()
+        # print(targets['size_3d'][0][0])
+
+        # test heatmap
+        heatmap = targets['heatmap'][0]  # image id
+        heatmap = Image.fromarray(heatmap[0].numpy() * 255)  # cats id
+        heatmap.show()
+
+        break
+
+
+    # print ground truth fisrt
+    objects = dataset.get_label(0)
+    for object in objects:
+        print(object.to_kitti_format())
