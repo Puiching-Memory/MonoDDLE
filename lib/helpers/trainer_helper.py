@@ -54,6 +54,8 @@ class Trainer(object):
         self.train_sampler = train_sampler
         self.distill_cfg = distill_cfg or {}
         self.distill_lambda = float(self.distill_cfg.get('lambda', 0.0))
+        self.ckpt_dir = cfg.get('checkpoints_dir', os.path.join('experiments', 'results', 'checkpoints'))
+        self.find_unused_parameters = bool(cfg.get('find_unused_parameters', True))
 
         # ---- device selection ------------------------------------------------
         if distributed:
@@ -95,8 +97,13 @@ class Trainer(object):
                 self.model,
                 device_ids=[get_local_rank()],
                 output_device=get_local_rank(),
-                find_unused_parameters=True,
+                find_unused_parameters=self.find_unused_parameters,
             )
+            if is_main_process():
+                self.logger.info(
+                    'DDP find_unused_parameters: %s',
+                    self.find_unused_parameters,
+                )
         else:
             self.model = torch.nn.DataParallel(model, device_ids=self.gpu_ids).to(self.device)
 
@@ -132,8 +139,8 @@ class Trainer(object):
             # save trained model (main process only in DDP)
             if (self.epoch % self.cfg['save_frequency']) == 0:
                 if (not self.distributed) or is_main_process():
-                    os.makedirs('checkpoints', exist_ok=True)
-                    ckpt_name = os.path.join('checkpoints', 'checkpoint_epoch_%d' % self.epoch)
+                    os.makedirs(self.ckpt_dir, exist_ok=True)
+                    ckpt_name = os.path.join(self.ckpt_dir, 'checkpoint_epoch_%d' % self.epoch)
                     save_checkpoint(get_checkpoint_state(self.model, self.optimizer, self.epoch), ckpt_name)
 
             if show_progress:

@@ -16,7 +16,7 @@ class Tester(object):
         self.dataloader = dataloader
         self.max_objs = dataloader.dataset.max_objs    # max objects per images, defined in dataset
         self.class_name = dataloader.dataset.class_name
-        self.output_dir = './outputs'
+        self.output_dir = cfg.get('output_dir', os.path.join('experiments', 'results', 'outputs'))
         self.dataset_type = cfg.get('type', 'KITTI')
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.logger = logger
@@ -90,7 +90,8 @@ class Tester(object):
 
 
 
-    def save_results(self, results, output_dir='./outputs'):
+    def save_results(self, results):
+        output_dir = self.output_dir
         output_dir = os.path.join(output_dir, 'data')
         os.makedirs(output_dir, exist_ok=True)
 
@@ -115,5 +116,5 @@ class Tester(object):
 
 
     def evaluate(self):
-        self.dataloader.dataset.eval(results_dir='./outputs/data', logger=self.logger)
+        self.dataloader.dataset.eval(results_dir=os.path.join(self.output_dir, 'data'), logger=self.logger)
 

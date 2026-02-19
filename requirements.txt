@@ -3,3 +3,4 @@ scikit-image
 tqdm
 pyyaml
 ultralytics
+ultralytics-thop

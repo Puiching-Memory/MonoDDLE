@@ -9,7 +9,7 @@ import yaml
 import argparse
 import datetime
 
-from lib.helpers.model_helper import build_model
+from lib.helpers.model_helper import build_model, log_model_complexity
 from lib.helpers.dataloader_helper import build_dataloader
 from lib.helpers.optimizer_helper import build_optimizer
 from lib.helpers.scheduler_helper import build_lr_scheduler
@@ -26,10 +26,46 @@ parser.add_argument('-e', '--evaluate_only', action='store_true', default=False,
 args = parser.parse_args()
 
 
+def _build_experiment_paths(config_path):
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    configs_root = os.path.join(ROOT_DIR, 'experiments', 'configs')
+    config_abs = os.path.abspath(config_path)
+
+    if os.path.commonpath([config_abs, configs_root]) == configs_root:
+        rel_no_ext = os.path.splitext(os.path.relpath(config_abs, configs_root))[0]
+    else:
+        rel_no_ext = os.path.splitext(os.path.basename(config_abs))[0]
+
+    run_dir = os.path.join(ROOT_DIR, 'experiments', 'results', rel_no_ext, ts)
+    return {
+        'run_dir': run_dir,
+        'log_dir': os.path.join(run_dir, 'logs'),
+        'ckpt_dir': os.path.join(run_dir, 'checkpoints'),
+        'output_dir': os.path.join(run_dir, 'outputs'),
+    }
+
+
 
 def main():
     assert (os.path.exists(args.config))
     cfg = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
+
+    exp_paths = _build_experiment_paths(args.config)
+    os.makedirs(exp_paths['log_dir'], exist_ok=True)
+    os.makedirs(exp_paths['ckpt_dir'], exist_ok=True)
+    os.makedirs(exp_paths['output_dir'], exist_ok=True)
+
+    cfg.setdefault('trainer', {})
+    cfg.setdefault('tester', {})
+    cfg['trainer']['checkpoints_dir'] = exp_paths['ckpt_dir']
+    cfg['tester']['output_dir'] = exp_paths['output_dir']
+
+    if not args.evaluate_only:
+        cfg['tester']['checkpoint'] = os.path.join(
+            exp_paths['ckpt_dir'],
+            'checkpoint_epoch_%d.pth' % cfg['trainer'].get('max_epoch', 140)
+        )
+        cfg['tester']['checkpoints_dir'] = exp_paths['ckpt_dir']
 
     # resolve root_dir relative to the project root when given as a relative path
     root_dir = cfg['dataset'].get('root_dir', 'data/KITTI')
@@ -37,8 +73,9 @@ def main():
         cfg['dataset']['root_dir'] = os.path.normpath(os.path.join(ROOT_DIR, root_dir))
 
     set_random_seed(cfg.get('random_seed', 444))
-    log_file = 'train_%s.log' % datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(exp_paths['log_dir'], 'train.log')
     logger = create_logger(log_file)
+    logger.info('Experiment dir: %s' % exp_paths['run_dir'])
 
 
     # build dataloader
@@ -46,6 +83,9 @@ def main():
 
     # build model
     model = build_model(cfg['model'])
+
+    profile_resolution = tuple(train_loader.dataset.resolution[::-1].tolist())
+    log_model_complexity(model, logger=logger, input_resolution=profile_resolution)
 
     if args.evaluate_only:
         logger.info('###################  Evaluation Only  ##################')

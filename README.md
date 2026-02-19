@@ -1,5 +1,7 @@
 # Delving into Localization Errors for Monocular 3D Detection
 
+[中文文档](README.zh-CN.md)
+
 By [Xinzhu Ma](https://scholar.google.com/citations?user=8PuKa_8AAAAJ), Yinmin Zhang, [Dan Xu](https://www.danxurgb.net/), [Dongzhan Zhou](https://scholar.google.com/citations?user=Ox6SxpoAAAAJ), [Shuai Yi](https://scholar.google.com/citations?user=afbbNmwAAAAJ), [Haojie Li](https://scholar.google.com/citations?user=pMnlgVMAAAAJ), [Wanli Ouyang](https://wlouyang.github.io/).
 
 
@@ -15,25 +17,19 @@ This repository is an official implementation of the paper ['Delving into Locali
 ## Usage
 
 ### Installation
-This repo is tested on our local environment (python=3.6, cuda=9.0, pytorch=1.1), and we recommend you to use anaconda to create a vitural environment:
+We recommend using `uv` to manage the Python environment and dependencies:
 
 ```bash
-conda create -n monodle python=3.6
-```
-Then, activate the environment:
-```bash
-conda activate monodle
-```
-
-Install  Install PyTorch:
-
-```bash
-conda install pytorch==1.1.0 torchvision==0.3.0 cudatoolkit=9.0 -c pytorch
+cd #ROOT
+uv venv .venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
 ```
 
-and other  requirements:
+To pin a specific Python version:
+
 ```bash
-pip install -r requirements.txt
+uv venv .venv --python 3.10
 ```
 
 ### Data Preparation
@@ -44,19 +40,20 @@ Please download [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object
   |data/
     |KITTI/
       |ImageSets/ [already provided in this repo]
-      |object/			
-        |training/
-          |calib/
-          |image_2/
-          |label/
-        |testing/
-          |calib/
-          |image_2/
+      |training/
+        |calib/
+        |image_2/
+        |label_2/
+      |testing/
+        |calib/
+        |image_2/
       |DA3_depth_results/   # optional, required for depth distillation
         |000000.npz
         |000001.npz
         |...
 ```
+
+The default data root is `data/KITTI` (i.e. `dataset.root_dir: 'data/KITTI'` in yaml).
 
 For DA3 depth distillation training, generate metric depth pseudo labels in advance and save them to `data/KITTI/DA3_depth_results`.
 
@@ -66,15 +63,15 @@ Each depth file should be a `.npz` file with key `depth`.
 
 Move to the workplace and train the network:
 
+> `tools/train_val.py` now resolves `dataset.root_dir` relative to project root.
+> You can run commands from repository root directly.
+
 #### Single-process DP mode (DataParallel, default)
 
 ```sh
 cd #ROOT
-cd experiments/example
-python ../../tools/train_val.py --config kitti_example.yaml
+python tools/train_val.py --config experiments/configs/monodle/kitti_no_da3.yaml
 ```
-
-The provided example yaml files set `dataset.root_dir: '../../../../data/KITTI'`, which matches this working directory (`experiments/example`).
 
 #### Multi-process DDP mode (DistributedDataParallel)
 
@@ -83,13 +80,12 @@ Use `torchrun` to launch one process per GPU:
 
 ```sh
 cd #ROOT
-cd experiments/example
 # Auto-detect all available GPUs:
-./train_ddp.sh kitti_da3_ddp.yaml
+bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3.yaml
 # Or specify the number of GPUs:
-./train_ddp.sh kitti_da3_ddp.yaml 4
+bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3.yaml 4
 # Or use torchrun directly:
-torchrun --nproc_per_node=4 ../../tools/train_val_ddp.py --config kitti_da3_ddp.yaml
+torchrun --nproc_per_node=8 tools/train_val_ddp.py --config experiments/configs/monodle/kitti_da3.yaml
 ```
 
 > **DP ↔ DDP equivalence**: MonoDLE is sensitive to batch size and learning rate.
@@ -100,7 +96,7 @@ torchrun --nproc_per_node=4 ../../tools/train_val_ddp.py --config kitti_da3_ddp.
 The model will be evaluated automatically if the training completed. If you only want evaluate your trained model (or the provided [pretrained model](https://drive.google.com/file/d/1jaGdvu_XFn5woX0eJ5I2R6wIcBLVMJV6/view?usp=sharing)) , you can modify the test part configuration in the .yaml file and use the following command:
 
 ```sh
-python ../../tools/train_val.py --config kitti_da3_enabled.yaml -e
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3.yaml -e
 ```
 
 ### Depth Distillation (DA3)
@@ -129,25 +125,100 @@ Then train as usual (example):
 
 ```sh
 cd #ROOT
-cd experiments/example
-python ../../tools/train_val.py --config kitti_da3_enabled.yaml
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3.yaml
 ```
 
 To disable distillation, set `distill.lambda: 0.0` or `dataset.use_da3_depth: False`.
+
+### Ultralytics Backbone Integration (YOLO8/11/26)
+
+The project supports replacing only the backbone with Ultralytics YOLO while keeping the original `DLAUp + CenterNet3D heads + loss` unchanged.
+
+Supported backbone keywords in yaml:
+
+- `yolo8`  (default weight: `yolov8n.pt`)
+- `yolo11` (default weight: `yolo11n.pt`)
+- `yolo26` (default weight: `yolo26n.pt`)
+
+Optional model fields:
+
+```yaml
+model:
+  type: 'centernet3d'
+  backbone: 'yolo11'
+  ultralytics_model: 'yolo11n.pt'   # override weight path if needed
+  feature_strides: [4, 8, 16, 32]   # multiscale features for DLAUp
+  # feature_indices: [2, 15, 18, 21] # optional manual override
+  # freeze_backbone: False            # optional
+```
+
+### Ablation Configs (YOLO vs YOLO+DA3)
+
+The following configs are provided under `experiments/configs/ablation`:
+
+| Group           | Config                                       |
+| --------------- | -------------------------------------------- |
+| YOLO8 baseline  | `experiments/configs/ablation/kitti_yolo8.yaml`      |
+| YOLO8 + DA3     | `experiments/configs/ablation/kitti_yolo8_da3.yaml`  |
+| YOLO11 baseline | `experiments/configs/ablation/kitti_yolo11.yaml`     |
+| YOLO11 + DA3    | `experiments/configs/ablation/kitti_yolo11_da3.yaml` |
+| YOLO26 baseline | `experiments/configs/ablation/kitti_yolo26.yaml`     |
+| YOLO26 + DA3    | `experiments/configs/ablation/kitti_yolo26_da3.yaml` |
+
+Run examples from repo root:
+
+```sh
+# baseline
+python tools/train_val.py --config experiments/configs/ablation/kitti_yolo8.yaml
+
+# +DA3 distillation
+python tools/train_val.py --config experiments/configs/ablation/kitti_yolo8_da3.yaml
+
+# DDP ablation (same equivalent total batch as DP)
+bash experiments/scripts/train_ddp.sh experiments/configs/ablation/kitti_yolo8_da3.yaml 2
+```
+
+Evaluate only:
+
+```sh
+python tools/train_val.py --config experiments/configs/ablation/kitti_yolo11_da3.yaml -e
+
+```
+
+Experiment structure overview:
+
+```text
+experiments/
+  configs/
+    monodle/
+    ablation/
+  scripts/
+  results/
+    <config_rel_path>/
+      <timestamp>/
+        checkpoints/
+        outputs/
+        logs/
+```
+
+> Note: on first use, Ultralytics may download/cache model assets automatically.
 
 ### DP / DDP Equivalence
 
 MonoDLE's training is **highly sensitive** to batch size and learning rate.
 When migrating from DP to DDP (or changing the number of GPUs), incorrect
 hyperparameter settings will cause significant accuracy degradation.
+All experiment YAMLs under `experiments/configs/monodle` and `experiments/configs/ablation`
+already include `distributed.dp_reference`, so DP/DDP ablation can be run with
+equivalent effective total batch size by default.
 
 #### Quick rules
 
-| Scenario | `batch_size` (YAML) | `lr` |
-|---|---|---|
-| **DP** (default) | Total batch across all GPUs | As configured |
-| **DDP** (same total batch) | `DP_batch / world_size` | **Same** as DP |
-| **DDP** (larger total batch) | Any per-GPU value | `DP_lr × (DDP_total / DP_total)` (linear scaling) |
+| Scenario                     | `batch_size` (YAML)         | `lr`                                              |
+| ---------------------------- | --------------------------- | ------------------------------------------------- |
+| **DP** (default)             | Total batch across all GPUs | As configured                                     |
+| **DDP** (same total batch)   | `DP_batch / world_size`     | **Same** as DP                                    |
+| **DDP** (larger total batch) | Any per-GPU value           | `DP_lr × (DDP_total / DP_total)` (linear scaling) |
 
 #### Why they are equivalent
 
