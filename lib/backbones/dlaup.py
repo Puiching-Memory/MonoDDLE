@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from lib.helpers.init_helper import init_weights_kaiming, fill_up_weights
 
 class Conv2d(nn.Module):
     def __init__(self, in_planes, out_planes, kernal_szie=3, stride=1, bias=True):
@@ -63,7 +62,13 @@ class IDAUp(nn.Module):
 
 
         # weight init
-        self.apply(init_weights_kaiming)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
 
     def forward(self, layers):
         assert len(self.in_channels_list) == len(layers), \
@@ -112,7 +117,13 @@ class IDAUpv2(nn.Module):
 
 
         # weight init
-        self.apply(init_weights_kaiming)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
 
     def forward(self, layers):
         assert len(self.in_channels_list) == len(layers), \
@@ -183,6 +194,19 @@ class DLAUpv2(nn.Module):
         return outputs[-1]
 
 
+
+
+# weight init for up-sample layers [tranposed conv2d]
+def fill_up_weights(up):
+    w = up.weight.data
+    f = math.ceil(w.size(2) / 2)
+    c = (2 * f - 1 - f % 2) / (2. * f)
+    for i in range(w.size(2)):
+        for j in range(w.size(3)):
+            w[0, 0, i, j] = \
+                (1 - math.fabs(i / f - c)) * (1 - math.fabs(j / f - c))
+    for c in range(1, w.size(0)):
+        w[c, 0, :, :] = w[0, 0, :, :]
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ from lib.losses.uncertainty_loss import laplacian_aleatoric_uncertainty_loss
 from lib.losses.dim_aware_loss import dim_aware_l1_loss
 
 
-def compute_centernet3d_loss(input, target):
+def compute_centernet3d_loss(input, target, distill_lambda=0.0, distill_cfg=None):
     stats_dict = {}
 
     seg_loss = compute_segmentation_loss(input, target)
@@ -30,6 +30,17 @@ def compute_centernet3d_loss(input, target):
 
     total_loss = seg_loss + offset2d_loss + size2d_loss + offset3d_loss + \
                  depth_loss + size3d_loss + heading_loss
+
+    if distill_lambda > 0 and 'da3_depth' in target:
+        _cfg = distill_cfg or {}
+        distill_loss = compute_dense_depth_distill_loss(
+            input, target,
+            loss_type=_cfg.get('loss_type', 'l1'),
+            foreground_weight=_cfg.get('foreground_weight', 5.0),
+        )
+        stats_dict['distill'] = distill_loss.item()
+        total_loss = total_loss + distill_lambda * distill_loss
+
     return total_loss, stats_dict
 
 
@@ -95,7 +106,7 @@ def compute_heading_loss(input, target):
     # regression loss
     heading_input_res = heading_input[:, 12:24]
     heading_input_res, heading_target_res = heading_input_res[mask], heading_target_res[mask]
-    cls_onehot = torch.zeros(heading_target_cls.shape[0], 12).cuda().scatter_(dim=1, index=heading_target_cls.view(-1, 1), value=1)
+    cls_onehot = torch.zeros(heading_target_cls.shape[0], 12, device=heading_input_res.device).scatter_(dim=1, index=heading_target_cls.view(-1, 1), value=1)
     heading_input_res = torch.sum(heading_input_res * cls_onehot, 1)
     reg_loss = F.l1_loss(heading_input_res, heading_target_res, reduction='mean')
     return cls_loss + reg_loss
@@ -109,6 +120,44 @@ def extract_input_from_tensor(input, ind, mask):
 
 def extract_target_from_tensor(target, mask):
     return target[mask.bool()]
+
+
+def compute_dense_depth_distill_loss(input, target, loss_type='l1',
+                                     foreground_weight=5.0):
+    device = input['depth'].device
+
+    if 'da3_depth' not in target:
+        return torch.tensor(0.0, device=device)
+
+    raw = input['depth'][:, 0:1]
+    pred_depth = 1.0 / (raw.sigmoid() + 1e-6) - 1.0
+
+    teacher_depth = target['da3_depth']
+    valid_mask = target['da3_depth_mask']
+
+    if valid_mask.sum() == 0:
+        return torch.tensor(0.0, device=device)
+
+    heatmap = target['heatmap']
+    fg = heatmap.max(dim=1, keepdim=True)[0]
+    weight = 1.0 + (foreground_weight - 1.0) * fg
+    weight = weight * valid_mask
+
+    if loss_type == 'l1':
+        pixel_loss = torch.abs(pred_depth - teacher_depth)
+        loss = (pixel_loss * weight).sum() / weight.sum().clamp(min=1.0)
+
+    elif loss_type == 'silog':
+        valid_bool = (valid_mask > 0).squeeze(1)
+        pred_v = pred_depth.squeeze(1)[valid_bool].clamp(min=1e-3)
+        tgt_v = teacher_depth.squeeze(1)[valid_bool].clamp(min=1e-3)
+        log_diff = torch.log(pred_v) - torch.log(tgt_v)
+        loss = torch.sqrt((log_diff ** 2).mean() - 0.5 * (log_diff.mean() ** 2) + 1e-8)
+
+    else:
+        raise ValueError('Unknown distill loss_type: %s' % loss_type)
+
+    return loss
 
 
 if __name__ == '__main__':

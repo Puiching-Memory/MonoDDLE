@@ -1,158 +1,234 @@
 # Delving into Localization Errors for Monocular 3D Detection
 
+By [Xinzhu Ma](https://scholar.google.com/citations?user=8PuKa_8AAAAJ), Yinmin Zhang, [Dan Xu](https://www.danxurgb.net/), [Dongzhan Zhou](https://scholar.google.com/citations?user=Ox6SxpoAAAAJ), [Shuai Yi](https://scholar.google.com/citations?user=afbbNmwAAAAJ), [Haojie Li](https://scholar.google.com/citations?user=pMnlgVMAAAAJ), [Wanli Ouyang](https://wlouyang.github.io/).
+
+
 ## Introduction
+
+This repository is an official implementation of the paper ['Delving into Localization Errors for Monocular 3D Detection'](https://arxiv.org/abs/2103.16237). In this work, by intensive diagnosis experiments, we quantify the impact introduced by each sub-task and found the ‘localization error’ is the vital factor in restricting monocular 3D detection. Besides, we also investigate the underlying reasons behind localization errors, analyze the issues they might bring, and propose three strategies. 
+
+<img src="resources/example.jpg" alt="vis" style="zoom:50%;" />
+
+
+
 
 ## Usage
 
 ### Installation
-This repo is tested on our local environment (python=3.13, cuda=12.8, pytorch=2.9.1), and we recommend you to use uv to create a virtual environment:
+This repo is tested on our local environment (python=3.6, cuda=9.0, pytorch=1.1), and we recommend you to use anaconda to create a vitural environment:
 
 ```bash
-uv venv --python=3.13
-source .venv/bin/activate
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-uv pip install -r requirements.txt
+conda create -n monodle python=3.6
+```
+Then, activate the environment:
+```bash
+conda activate monodle
+```
+
+Install  Install PyTorch:
+
+```bash
+conda install pytorch==1.1.0 torchvision==0.3.0 cudatoolkit=9.0 -c pytorch
+```
+
+and other  requirements:
+```bash
+pip install -r requirements.txt
 ```
 
 ### Data Preparation
 Please download [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d) and organize the data as follows:
 
-```text
-#ROOT
-└── data
-    └── KITTI
-        ├── ImageSets [already provided]
-        ├── object [create this symlink to self]
-        │   ├── training -> ../training
-        │   └── testing -> ../testing
-        ├── training
-        │   ├── calib (unzipped from calib.zip)
-        │   ├── image_2 (unzipped from left_color.zip)
-        │   └── label_2 (unzipped from label_2.zip)
-        └── testing
-            ├── calib
-            └── image_2
 ```
+#ROOT
+  |data/
+    |KITTI/
+      |ImageSets/ [already provided in this repo]
+      |object/			
+        |training/
+          |calib/
+          |image_2/
+          |label/
+        |testing/
+          |calib/
+          |image_2/
+      |DA3_depth_results/   # optional, required for depth distillation
+        |000000.npz
+        |000001.npz
+        |...
+```
+
+For DA3 depth distillation training, generate metric depth pseudo labels in advance and save them to `data/KITTI/DA3_depth_results`.
+
+Each depth file should be a `.npz` file with key `depth`.
 
 ### Training & Evaluation
 
-#### MonoDLE (CenterNet-based)
+Move to the workplace and train the network:
 
-The MonoDLE training pipeline now supports:
-
-- DDP multi-GPU training via `torchrun`
-- AMP mixed precision (`--amp`)
-- `torch.compile` graph acceleration (`--compile`)
-- EMA parameter averaging (`--ema`)
-- random seed + deterministic algorithm controls (`--seed`, `--deterministic`)
-- timm integration:
-    - timm backbone (`model.type: centernet3d_timm`)
-    - timm optimizer (`optimizer.type`, e.g. `lamb`)
-
-Run in project root:
+#### Single-process DP mode (DataParallel, default)
 
 ```sh
-# 1) Default training (single GPU or DataParallel)
-python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
-
-# 2) DDP training (example: 2 GPUs)
-torchrun --nproc_per_node=2 tools/train_val.py \
-    --config experiments/kitti/monodle_kitti.yaml --ddp --amp --ema
-
-# 3) Single GPU with AMP + compile + EMA
-python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml \
-    --amp --compile --ema
-
-# 4) Evaluation only
-python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml -e
+cd #ROOT
+cd experiments/example
+python ../../tools/train_val.py --config kitti_example.yaml
 ```
 
-Output layout is aligned with YOLO3D: `<project>/<name>/` (default: `runs/monodle/train/`).
+The provided example yaml files set `dataset.root_dir: '../../../../data/KITTI'`, which matches this working directory (`experiments/example`).
+
+#### Multi-process DDP mode (DistributedDataParallel)
+
+DDP provides better scaling efficiency and avoids the GIL bottleneck of DP.
+Use `torchrun` to launch one process per GPU:
 
 ```sh
-# Recommended explicit output layout
-python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml \
-    --project runs/monodle --name exp01
-
-# Still supported: explicit output directory override
-python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml \
-    -o runs/monodle/exp01
+cd #ROOT
+cd experiments/example
+# Auto-detect all available GPUs:
+./train_ddp.sh kitti_da3_ddp.yaml
+# Or specify the number of GPUs:
+./train_ddp.sh kitti_da3_ddp.yaml 4
+# Or use torchrun directly:
+torchrun --nproc_per_node=4 ../../tools/train_val_ddp.py --config kitti_da3_ddp.yaml
 ```
 
-Typical artifacts include `args.yaml`, `train.log.*`, `weights/`, `kitti_eval/`, `eval_results.csv`, and `last_eval_result.json`.
+> **DP ↔ DDP equivalence**: MonoDLE is sensitive to batch size and learning rate.
+> When switching between DP and DDP, the hyperparameters must be adjusted to
+> produce equivalent training dynamics.  See the
+> [DP/DDP Equivalence](#dp--ddp-equivalence) section below for details.
 
-See `experiments/kitti/monodle_kitti.yaml` for:
-
-- `project` / `name` output settings
-- `model.type: centernet3d | centernet3d_timm`
-- `optimizer.type` support for both torch and timm optimizers
-
-| Method            | AP40@Mod. | Note |
-| ----------------- | --------- | ---- |
-| MonoDLE (Paper)   | 13.66     | Original paper result |
-| MonoDLE (Repo)    | 12.69     | Reproduce result (Epoch 140) |
-
-#### YOLO3D (Ultralytics-based)
-
-YOLO3D extends the Ultralytics YOLO detection framework with MonoDDLE-style monocular 3D detection heads. It reuses YOLO's training loop, data augmentation, and post-processing while adding 3D prediction branches for depth, dimensions, heading, and 3D center offset.
-
-Three YOLO backbone versions are supported:
-
-| Version | Config | NMS | Features |
-| ------- | ------ | --- | -------- |
-| YOLOv8  | `yolo3d_v8n.yaml` | Standard NMS | Anchor-free, reg_max=16 |
-| YOLO11  | `yolo3d_11n.yaml` | Standard NMS | Improved backbone (C3k2/C2PSA), reg_max=16 |
-| YOLO26  | `yolo3d_26n.yaml` | **NMS-free** (end2end) | Dual one2many/one2one heads, reg_max=1 |
+The model will be evaluated automatically if the training completed. If you only want evaluate your trained model (or the provided [pretrained model](https://drive.google.com/file/d/1jaGdvu_XFn5woX0eJ5I2R6wIcBLVMJV6/view?usp=sharing)) , you can modify the test part configuration in the .yaml file and use the following command:
 
 ```sh
-# YOLOv8 — standard NMS
-python tools/train_yolo3d.py --model yolov8n.pt --data experiments/kitti/yolo3d_v8n.yaml
-
-# YOLO11 — standard NMS
-python tools/train_yolo3d.py --model yolo11n.pt --data experiments/kitti/yolo3d_11n.yaml
-
-# YOLO26 — NMS-free end2end
-python tools/train_yolo3d.py --model yolo26n.pt --data experiments/kitti/yolo3d_26n.yaml
-
-# From scratch (any version)
-python tools/train_yolo3d.py --model yolo26n.yaml --data experiments/kitti/yolo3d_26n.yaml
-
-# Multi-GPU
-python tools/train_yolo3d.py --model yolov8s.pt --data experiments/kitti/yolo3d_v8n.yaml --device 0,1
-
-# Resume training
-python tools/train_yolo3d.py --model runs/yolo3d/yolov8n/weights/last.pt --resume
+python ../../tools/train_val.py --config kitti_da3_enabled.yaml -e
 ```
 
-All outputs are saved under `runs/yolo3d/<name>/`. Model scale can also be changed by replacing `n` with `s`/`m`/`l`/`x` in the model name (e.g., `yolov8s.pt`, `yolo26m.yaml`).
+### Depth Distillation (DA3)
 
-**Architecture overview:**
+The training pipeline supports dense depth distillation without changing the model architecture:
 
+\[
+L_{total} = L_{base} + \lambda \cdot L_{distill}
+\]
+
+where `L_distill` can be configured as weighted `l1` or `silog`, and foreground regions receive larger weights.
+
+Enable the following options in yaml:
+
+```yaml
+dataset:
+  use_da3_depth: True
+
+distill:
+  lambda: 0.5
+  loss_type: 'l1'           # 'l1' or 'silog'
+  foreground_weight: 5.0
 ```
-YOLO Backbone (v8/11/26) → FPN Neck → Detect3D Head
-                                         ├── cv2: BBox regression (2D)
-                                         ├── cv3: Classification
-                                         └── cv4: Mono3D (depth + 3D center + size + heading)
+
+Then train as usual (example):
+
+```sh
+cd #ROOT
+cd experiments/example
+python ../../tools/train_val.py --config kitti_da3_enabled.yaml
 ```
+
+To disable distillation, set `distill.lambda: 0.0` or `dataset.use_da3_depth: False`.
+
+### DP / DDP Equivalence
+
+MonoDLE's training is **highly sensitive** to batch size and learning rate.
+When migrating from DP to DDP (or changing the number of GPUs), incorrect
+hyperparameter settings will cause significant accuracy degradation.
+
+#### Quick rules
+
+| Scenario | `batch_size` (YAML) | `lr` |
+|---|---|---|
+| **DP** (default) | Total batch across all GPUs | As configured |
+| **DDP** (same total batch) | `DP_batch / world_size` | **Same** as DP |
+| **DDP** (larger total batch) | Any per-GPU value | `DP_lr × (DDP_total / DP_total)` (linear scaling) |
+
+#### Why they are equivalent
+
+In DP, the gradient is `g = (1/B) Σ ∇L_i` computed on the full batch *B*.
+
+In DDP with *N* ranks each holding *b = B/N* samples:
+```
+g_k   = (1/b) Σ_{j∈rank_k} ∇L_j
+g_ddp = (1/N) Σ_k g_k = (1/B) Σ ∇L_i = g_dp   ✓
+```
+
+So when `b × N = B`, the gradient (and therefore the training) is mathematically identical and no LR change is needed.
+
+When the total batch size changes, the **linear scaling rule** applies:
+`lr_ddp = lr_dp × (b × N) / B`.
+
+#### Equivalence calculator
+
+A standalone calculator is provided to compute the exact hyperparameters:
+
+```sh
+# Default: DP batch=16, lr=0.00125, 8 GPUs → DDP on 4 GPUs
+python tools/dp_ddp_equivalence.py --dp-batch 16 --dp-lr 0.00125 --dp-gpus 8 --ddp-gpus 4
+
+# With detailed math derivation
+python tools/dp_ddp_equivalence.py --verbose
+
+# With numerical gradient comparison simulation
+python tools/dp_ddp_equivalence.py --simulate
+```
+
+#### Auto-equivalence in DDP config
+
+Add a `distributed.dp_reference` section to your YAML and `train_val_ddp.py`
+will **automatically override** `batch_size` and `lr` to match the DP reference:
+
+```yaml
+distributed:
+  enabled: true
+  dp_reference:
+    total_batch_size: 16
+    lr: 0.00125
+    num_gpus: 8
+```
+
+#### Note on object-level loss normalisation
+
+Some MonoDLE losses (2D/3D offset, size) use `mean(valid_objects)` instead of
+`mean(batch_size)`.  DP computes these on the *gathered* full batch; DDP
+computes per-process means then averages.  This introduces a tiny gradient
+discrepancy when the number of valid objects per GPU is unequal.  On KITTI this
+difference is typically < 0.1% and has no measurable impact on AP.
+
+For ease of use, we also provide a pre-trained checkpoint, which can be used for evaluation directly. See the below table to check the performance.
+
+|                   | AP40@Easy | AP40@Mod. | AP40@Hard |
+| ----------------- | --------- | --------- | --------- |
+| In original paper | 17.45     | 13.66     | 11.68     |
+| In this repo      | 17.94     | 13.72     | 12.10     |
 
 ## Citation
 
 If you find our work useful in your research, please consider citing:
 
 ```latex
+@InProceedings{Ma_2021_CVPR,
+author = {Ma, Xinzhu and Zhang, Yinmin, and Xu, Dan and Zhou, Dongzhan and Yi, Shuai and Li, Haojie and Ouyang, Wanli},
+title = {Delving into Localization Errors for Monocular 3D Object Detection},
+booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+month = {June},
+year = {2021}}
 ```
 
 ## Acknowlegment
 
-This repo benefits from these excellent works. Please also consider citing them.
-- [CenterNet](https://github.com/xingyizhou/CenterNet)
-- [MonoDLE](https://github.com/xinzhuma/monodle/)
-- [Ultralytics](https://github.com/ultralytics/ultralytics)
+This repo benefits from the excellent work [CenterNet](https://github.com/xingyizhou/CenterNet). Please also consider citing it.
 
 ## License
 
-This project is released under the GNU General Public License v3.0 (GPL-3.0).
+This project is released under the MIT License.
 
 ## Contact
 
-If you have any questions about this project, please feel free to contact 1138663075@qq.com.
+If you have any question about this project, please feel free to contact xinzhu.ma@sydney.edu.au.

@@ -1,167 +1,130 @@
-"""
-Optimizer builder with support for:
-  - PyTorch built-in optimizers (SGD, Adam, AdamW, RAdam, NAdam, etc.)
-  - timm optimizers (LAMB, LARS, Adafactor, Lion, etc.)
-  - Legacy MonoDLE custom AdamW (kept for backward compat)
-
-Config example (yaml)::
-
-    optimizer:
-      type: 'adamw'           # any torch or timm optimizer name
-      lr: 0.001
-      weight_decay: 0.01
-      # --- optional timm-specific fields ---
-      timm: false              # force timm optimizer factory
-      timm_kwargs:             # extra kwargs forwarded to timm.optim
-        eps: 1e-8
-"""
-
 import math
 import torch
 import torch.optim as optim
 from torch.optim.optimizer import Optimizer
 
-# timm is optional — graceful fallback
-try:
-    import timm.optim
-    _HAS_TIMM = True
-except ImportError:
-    _HAS_TIMM = False
-
-
-# ─── Torch built-in optimizer registry ────────────────────────────────
-_TORCH_OPTIM = {
-    'sgd':     optim.SGD,
-    'adam':    optim.Adam,
-    'adamw':  optim.AdamW,
-    'radam':  optim.RAdam,
-    'nadam':  optim.NAdam,
-    'adamax': optim.Adamax,
-    'rmsprop': optim.RMSprop,
-    'rprop':  optim.Rprop,
-    'asgd':   optim.ASGD,
-    'adadelta': optim.Adadelta,
-    'adagrad': optim.Adagrad,
-}
-
-# Add LBFGS separately (requires closure)
-# _TORCH_OPTIM['lbfgs'] = optim.LBFGS
-
-
-def _split_params(model, weight_decay):
-    """Split parameters into weight-decay and no-weight-decay groups."""
-    decay, no_decay = [], []
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        # Don't decay bias / norm layers
-        if param.ndim <= 1 or 'bias' in name:
-            no_decay.append(param)
-        else:
-            decay.append(param)
-    return [
-        {'params': decay, 'weight_decay': weight_decay},
-        {'params': no_decay, 'weight_decay': 0.0},
-    ]
-
-
 def build_optimizer(cfg_optimizer, model):
-    """Build an optimizer from a config dict.
+    weights, biases = [], []
+    for name, param in model.named_parameters():
+        if 'bias' in name:
+            biases += [param]
+        else:
+            weights += [param]
 
-    Args:
-        cfg_optimizer: dict with at least ``type`` and ``lr``.
-        model: nn.Module whose parameters to optimise.
-
-    Returns:
-        torch.optim.Optimizer
-    """
-    opt_type = cfg_optimizer['type'].lower()
-    lr = cfg_optimizer['lr']
-    wd = cfg_optimizer.get('weight_decay', 0.0)
-    params = _split_params(model, wd)
-
-    # ── timm path (explicit or auto-detect) ──────────────────────────
-    use_timm = cfg_optimizer.get('timm', False)
-    if use_timm or (opt_type not in _TORCH_OPTIM and opt_type != 'custom_adamw'):
-        if not _HAS_TIMM:
-            raise ImportError(
-                f"timm is required for optimizer '{opt_type}'. "
-                f"Install it with: pip install timm"
-            )
-        extra = cfg_optimizer.get('timm_kwargs', {})
-        optimizer = timm.optim.create_optimizer_v2(
-            model, opt=opt_type, lr=lr, weight_decay=wd, **extra,
-        )
-        return optimizer
-
-    # ── Legacy custom AdamW (for reproducing original MonoDLE) ───────
-    if opt_type == 'custom_adamw':
-        return _LegacyAdamW(params, lr=lr)
-
-    # ── Torch built-in ───────────────────────────────────────────────
-    cls = _TORCH_OPTIM.get(opt_type)
-    if cls is None:
-        raise NotImplementedError(f"Optimizer '{opt_type}' is not supported. "
-                                  f"Available: {list(_TORCH_OPTIM.keys())}")
-    kwargs = {'lr': lr}
-    if opt_type == 'sgd':
-        kwargs['momentum'] = cfg_optimizer.get('momentum', 0.9)
-        kwargs['nesterov'] = cfg_optimizer.get('nesterov', False)
-    return cls(params, **kwargs)
+    parameters = [{'params': biases, 'weight_decay': 0},
+                  {'params': weights, 'weight_decay': cfg_optimizer['weight_decay']}]
 
 
-# ─── Legacy MonoDLE custom AdamW ──────────────────────────────────────
+    if cfg_optimizer['type'] == 'sgd':
+        optimizer = optim.SGD(parameters, lr=cfg_optimizer['lr'], momentum=0.9)
+    elif cfg_optimizer['type'] == 'adam':
+        optimizer = optim.Adam(parameters, lr=cfg_optimizer['lr'])
+    elif cfg_optimizer['type'] == 'adamw':
+        optimizer = AdamW(parameters, lr=cfg_optimizer['lr'])
+    else:
+        raise NotImplementedError("%s optimizer is not supported" % cfg_optimizer['type'])
 
-class _LegacyAdamW(Optimizer):
-    """Original MonoDLE custom AdamW (multiplicative weight decay).
+    return optimizer
 
-    Kept strictly for backward compatibility / reproducing published results.
-    For new experiments prefer ``type: adamw`` which uses ``torch.optim.AdamW``.
+
+
+class AdamW(Optimizer):
+    r"""Implements Adam algorithm.
+    It has been proposed in `Adam: A Method for Stochastic Optimization`_.
+    Arguments:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+        lr (float, optional): learning rate (default: 1e-3)
+        betas (Tuple[float, float], optional): coefficients used for computing
+            running averages of gradient and its square (default: (0.9, 0.999))
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-8)
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        amsgrad (boolean, optional): whether to use the AMSGrad variant of this
+            algorithm from the paper `On the Convergence of Adam and Beyond`_
+    .. _Adam\: A Method for Stochastic Optimization:
+        https://arxiv.org/abs/1412.6980
+    .. _On the Convergence of Adam and Beyond:
+        https://openreview.net/forum?id=ryQu7f-RZ
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=0, amsgrad=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
         defaults = dict(lr=lr, betas=betas, eps=eps,
                         weight_decay=weight_decay, amsgrad=amsgrad)
-        super().__init__(params, defaults)
+        super(AdamW, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(AdamW, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsgrad', False)
 
     def step(self, closure=None):
+        """Performs a single optimization step.
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
         loss = None
         if closure is not None:
             loss = closure()
+
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
                     continue
                 grad = p.grad.data
                 if grad.is_sparse:
-                    raise RuntimeError('AdamW does not support sparse gradients')
+                    raise RuntimeError('Adam does not support sparse gradients, please consider SparseAdam instead')
                 amsgrad = group['amsgrad']
+
                 state = self.state[p]
+
+                # State initialization
                 if len(state) == 0:
                     state['step'] = 0
+                    # Exponential moving average of gradient values
                     state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
                     state['exp_avg_sq'] = torch.zeros_like(p.data)
                     if amsgrad:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
                         state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
-                beta1, beta2 = group['betas']
-                state['step'] += 1
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
                 if amsgrad:
                     max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                # if group['weight_decay'] != 0:
+                #     grad = grad.add(group['weight_decay'], p.data)
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsgrad:
+                    # Maintains the maximum of all 2nd moment running avg. till now
                     torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
                     denom = max_exp_avg_sq.sqrt().add_(group['eps'])
                 else:
                     denom = exp_avg_sq.sqrt().add_(group['eps'])
-                bc1 = 1 - beta1 ** state['step']
-                bc2 = 1 - beta2 ** state['step']
-                step_size = group['lr'] * math.sqrt(bc2) / bc1
-                p.data.add_(
-                    torch.mul(p.data, group['weight_decay']).addcdiv_(
-                        exp_avg, denom, value=1
-                    ),
-                    alpha=-step_size,
-                )
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                # p.data.addcdiv_(-step_size, exp_avg, denom)
+                p.data.add_(-step_size,  torch.mul(p.data, group['weight_decay']).addcdiv_(1, exp_avg, denom) )
+
         return loss

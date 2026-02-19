@@ -11,50 +11,51 @@ def my_worker_init_fn(worker_id):
 
 
 def build_dataloader(cfg, workers=4, distributed=False):
-    """Build train and test DataLoaders.
+    """Build train and test dataloaders.
 
-    Args:
-        cfg: dataset config dict with keys like ``type``, ``batch_size``, etc.
-        workers: number of dataloader workers.
-        distributed: if True, use ``DistributedSampler`` for the train set.
+    Parameters
+    ----------
+    cfg : dict
+        Dataset configuration from YAML.
+    workers : int
+        Number of dataloader workers **per process**.
+    distributed : bool
+        If True, use ``DistributedSampler`` for the training set so that each
+        DDP rank sees a disjoint partition of the data.  In this mode
+        ``cfg['batch_size']`` is treated as the **per-GPU** batch size.
 
-    Returns:
-        (train_loader, test_loader, train_sampler)
-        ``train_sampler`` is the ``DistributedSampler`` when ``distributed=True``
-        (caller must call ``train_sampler.set_epoch(epoch)`` each epoch),
-        otherwise ``None``.
+    Returns
+    -------
+    train_loader, test_loader, train_sampler
+        ``train_sampler`` is ``None`` when ``distributed=False``.  In DDP mode
+        the caller must call ``train_sampler.set_epoch(epoch)`` every epoch.
     """
-    # prepare dataset
+    # perpare dataset
     if cfg['type'] == 'KITTI':
         train_set = KITTI_Dataset(split='train', cfg=cfg)
         test_set = KITTI_Dataset(split='val', cfg=cfg)
     else:
         raise NotImplementedError("%s dataset is not supported" % cfg['type'])
 
-    # sampler
     train_sampler = None
     if distributed:
         train_sampler = DistributedSampler(train_set, shuffle=True)
 
     # prepare dataloader
-    train_loader = DataLoader(
-        dataset=train_set,
-        batch_size=cfg['batch_size'],
-        num_workers=workers,
-        worker_init_fn=my_worker_init_fn,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
-        pin_memory=True,
-        drop_last=True,
-    )
-    test_loader = DataLoader(
-        dataset=test_set,
-        batch_size=cfg['batch_size'],
-        num_workers=workers,
-        worker_init_fn=my_worker_init_fn,
-        shuffle=False,
-        pin_memory=True,
-        drop_last=False,
-    )
+    train_loader = DataLoader(dataset=train_set,
+                              batch_size=cfg['batch_size'],
+                              num_workers=workers,
+                              worker_init_fn=my_worker_init_fn,
+                              shuffle=(train_sampler is None),
+                              sampler=train_sampler,
+                              pin_memory=False,
+                              drop_last=True)
+    test_loader = DataLoader(dataset=test_set,
+                             batch_size=cfg['batch_size'],
+                             num_workers=workers,
+                             worker_init_fn=my_worker_init_fn,
+                             shuffle=False,
+                             pin_memory=False,
+                             drop_last=False)
 
     return train_loader, test_loader, train_sampler

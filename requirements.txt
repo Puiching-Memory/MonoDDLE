@@ -2,15 +2,4 @@ fire
 scikit-image
 tqdm
 pyyaml
-opencv-python
-loguru
-rich
-timm
-tabulate
-ninja
-
-torch
-torchvision
-triton
-
 ultralytics

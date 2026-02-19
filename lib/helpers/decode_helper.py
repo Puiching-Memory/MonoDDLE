@@ -6,7 +6,7 @@ from lib.datasets.utils import class2angle
 
 def decode_detections(dets, info, calibs, cls_mean_size, threshold):
     '''
-    NOTE: THIS IS A NUMPY FUNCTION (matches official MonoDLE exactly)
+    NOTE: THIS IS A NUMPY FUNCTION
     input: dets, numpy array, shape in [batch x max_dets x dim]
     input: img_info, dict, necessary information of input images
     input: calibs, corresponding calibs for the input batch
@@ -47,6 +47,20 @@ def decode_detections(dets, info, calibs, cls_mean_size, threshold):
             ry = calibs[i].alpha2ry(alpha, x3d)
 
             score = score * dets[i, j, -1]
+
+            ##### generate 2d bbox using 3d bbox
+            # h, w, l = dimensions
+            # x_corners = [l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2]
+            # y_corners = [0, 0, 0, 0, -h, -h, -h, -h]
+            # z_corners = [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2]
+            # R = np.array([[np.cos(ry), 0, np.sin(ry)],
+            #               [0, 1, 0],
+            #               [-np.sin(ry), 0, np.cos(ry)]])
+            # corners3d = np.vstack([x_corners, y_corners, z_corners])  # (3, 8)
+            # corners3d = np.dot(R, corners3d).T
+            # corners3d = corners3d + locations
+            # bbox, _ = calibs[i].corners3d_to_img_boxes(corners3d.reshape(1, 8, 3))
+            # bbox = bbox.reshape(-1).tolist()
 
             preds.append([cls_id, alpha] + bbox + dimensions.tolist() + locations.tolist() + [ry, score])
         results[info['img_id'][i]] = preds
@@ -177,3 +191,13 @@ def get_heading_angle(heading):
     cls = np.argmax(heading_bin)
     res = heading_res[cls]
     return class2angle(cls, res, to_label_format=True)
+
+
+
+if __name__ == '__main__':
+    ## testing
+    from lib.datasets.kitti.kitti_dataset import KITTI_Dataset
+    from torch.utils.data import DataLoader
+
+    dataset = KITTI_Dataset('../../data', 'train')
+    dataloader = DataLoader(dataset=dataset, batch_size=2)
