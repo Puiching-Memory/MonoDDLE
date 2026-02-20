@@ -11,3 +11,4 @@ __pycache__/
 /checkpoints/
 runs/
 data/
+temp/

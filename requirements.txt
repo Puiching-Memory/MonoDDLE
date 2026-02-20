@@ -4,3 +4,4 @@ tqdm
 pyyaml
 ultralytics
 ultralytics-thop
+timm
