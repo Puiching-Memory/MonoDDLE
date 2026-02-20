@@ -10,15 +10,17 @@ def my_worker_init_fn(worker_id):
     np.random.seed(np.random.get_state()[1][0] + worker_id)
 
 
-def build_dataloader(cfg, workers=4, distributed=False):
+def build_dataloader(cfg, workers=None, distributed=False):
     """Build train and test dataloaders.
 
     Parameters
     ----------
     cfg : dict
-        Dataset configuration from YAML.
-    workers : int
-        Number of dataloader workers **per process**.
+        Dataset configuration from YAML.  If ``cfg['num_workers']`` is set it
+        takes precedence over the *workers* argument.
+    workers : int or None
+        Number of dataloader workers **per process**.  Defaults to
+        ``cfg['num_workers']`` if present, otherwise 4.
     distributed : bool
         If True, use ``DistributedSampler`` for the training set so that each
         DDP rank sees a disjoint partition of the data.  In this mode
@@ -30,6 +32,9 @@ def build_dataloader(cfg, workers=4, distributed=False):
         ``train_sampler`` is ``None`` when ``distributed=False``.  In DDP mode
         the caller must call ``train_sampler.set_epoch(epoch)`` every epoch.
     """
+    # resolve num_workers: YAML value > explicit arg > default 4
+    workers = cfg.get('num_workers', workers if workers is not None else 4)
+
     # perpare dataset
     if cfg['type'] == 'KITTI':
         train_set = KITTI_Dataset(split='train', cfg=cfg)

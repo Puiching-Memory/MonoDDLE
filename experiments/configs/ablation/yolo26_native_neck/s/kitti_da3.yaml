@@ -1,0 +1,56 @@
+random_seed: 444
+dataset:
+  type: KITTI
+  root_dir: data/KITTI
+  num_workers: 4
+  batch_size: 16
+  use_3d_center: true
+  class_merging: false
+  use_dontcare: false
+  bbox2d_type: anno
+  meanshape: false
+  writelist:
+  - Car
+  random_flip: 0.5
+  random_crop: 0.5
+  scale: 0.4
+  shift: 0.1
+  use_da3_depth: true
+model:
+  type: centernet3d
+  backbone: yolo26
+  ultralytics_model: yolo26s.pt
+  neck_out_channels: 64
+  neck: NativeNeck
+  num_class: 3
+optimizer:
+  type: adam
+  lr: 0.00125
+  weight_decay: 1.0e-05
+lr_scheduler:
+  warmup: true
+  decay_rate: 0.1
+  decay_list:
+  - 90
+  - 120
+trainer:
+  max_epoch: 140
+  gpu_ids: 0, 1
+  save_frequency: 10
+  find_unused_parameters: false
+distributed:
+  enabled: true
+  dp_reference:
+    total_batch_size: 16
+    lr: 0.00125
+    num_gpus: 2
+distill:
+  lambda: 0.5
+  loss_type: l1
+  foreground_weight: 5.0
+tester:
+  type: KITTI
+  mode: single
+  checkpoint: experiments/results/ablation/yolo26_native_neck/s/kitti_da3/<timestamp>/checkpoints/checkpoint_epoch_140.pth
+  checkpoints_dir: experiments/results/ablation/yolo26_native_neck/s/kitti_da3/<timestamp>/checkpoints
+  threshold: 0.2
