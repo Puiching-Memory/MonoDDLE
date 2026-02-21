@@ -8,6 +8,7 @@ import torch.nn as nn
 from lib.helpers.save_helper import get_checkpoint_state
 from lib.helpers.save_helper import load_checkpoint
 from lib.helpers.save_helper import save_checkpoint
+from lib.helpers.save_helper import cleanup_old_checkpoints
 from lib.helpers.dist_helper import is_distributed, is_main_process, get_rank, get_local_rank
 from lib.losses.centernet_loss import compute_centernet3d_loss
 
@@ -55,6 +56,7 @@ class Trainer(object):
         self.distill_cfg = distill_cfg or {}
         self.distill_lambda = float(self.distill_cfg.get('lambda', 0.0))
         self.ckpt_dir = cfg.get('checkpoints_dir', os.path.join('experiments', 'results', 'checkpoints'))
+        self.max_checkpoints = int(cfg.get('max_checkpoints', 5))
         self.find_unused_parameters = bool(cfg.get('find_unused_parameters', True))
 
         # ---- device selection ------------------------------------------------
@@ -142,6 +144,7 @@ class Trainer(object):
                     os.makedirs(self.ckpt_dir, exist_ok=True)
                     ckpt_name = os.path.join(self.ckpt_dir, 'checkpoint_epoch_%d' % self.epoch)
                     save_checkpoint(get_checkpoint_state(self.model, self.optimizer, self.epoch), ckpt_name)
+                    cleanup_old_checkpoints(self.ckpt_dir, self.max_checkpoints, self.logger)
 
             if show_progress:
                 progress_bar.update()

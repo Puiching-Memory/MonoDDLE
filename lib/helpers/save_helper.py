@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 import torch.nn as nn
 
@@ -43,3 +44,43 @@ def load_checkpoint(model, optimizer, filename, map_location, logger=None):
         raise FileNotFoundError
 
     return epoch
+
+
+def cleanup_old_checkpoints(ckpt_dir, max_checkpoints=5, logger=None):
+    """Remove oldest checkpoints to keep at most ``max_checkpoints`` files.
+
+    Parameters
+    ----------
+    ckpt_dir : str
+        Directory containing checkpoint files.
+    max_checkpoints : int
+        Maximum number of checkpoint files to retain. ``0`` disables cleanup.
+    logger : optional
+        Logger instance for informational messages.
+    """
+    if max_checkpoints <= 0:
+        return
+
+    pattern = re.compile(r'^checkpoint_epoch_(\d+)\.pth$')
+    ckpt_files = []
+    for fname in os.listdir(ckpt_dir):
+        match = pattern.match(fname)
+        if match:
+            epoch_num = int(match.group(1))
+            ckpt_files.append((epoch_num, fname))
+
+    ckpt_files.sort(key=lambda x: x[0])
+
+    if len(ckpt_files) <= max_checkpoints:
+        return
+
+    to_remove = ckpt_files[:len(ckpt_files) - max_checkpoints]
+    for epoch_num, fname in to_remove:
+        fpath = os.path.join(ckpt_dir, fname)
+        try:
+            os.remove(fpath)
+            if logger:
+                logger.info("Removed old checkpoint: %s", fname)
+        except OSError as e:
+            if logger:
+                logger.warning("Failed to remove checkpoint %s: %s", fname, e)
