@@ -39,6 +39,7 @@ trainer:
   max_epoch: 140
   gpu_ids: 0, 1
   save_frequency: 10
+  max_checkpoints: 5  # keep only the last N checkpoints, 0 to disable cleanup
   find_unused_parameters: False
 
 distributed:

@@ -14,17 +14,25 @@ class TimmBackboneAdapter(nn.Module):
         if not model_name:
             raise ValueError('model_name is required for timm backbone.')
 
-        # First create a temporary model to inspect feature info
+        # First create a temporary model to inspect feature info.
+        # Use the per-level 'index' field (model-level index) rather
+        # than list position, because some architectures (e.g. DLA)
+        # have more internal levels than the default features_only
+        # selection exposes, causing an off-by-one when list position
+        # is used directly as out_indices.
         temp_model = timm.create_model(model_name, pretrained=False, features_only=True)
-        reductions = temp_model.feature_info.reduction()
+        stride_to_index = {fi['reduction']: fi['index'] for fi in temp_model.feature_info}
         del temp_model
-        
+
         out_indices = []
         for stride in feature_strides:
-            if stride in reductions:
-                out_indices.append(reductions.index(stride))
+            if stride in stride_to_index:
+                out_indices.append(stride_to_index[stride])
             else:
-                raise ValueError(f"Stride {stride} not found in model {model_name} reductions {reductions}")
+                raise ValueError(
+                    f"Stride {stride} not found in model {model_name} "
+                    f"available strides {sorted(stride_to_index.keys())}"
+                )
 
         self.model = timm.create_model(
             model_name,

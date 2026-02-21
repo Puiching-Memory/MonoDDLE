@@ -22,6 +22,7 @@ model:
   backbone: 'dla34'
   neck: 'DLAUp'
   num_class: 3
+  freeze_backbone: False
 
 optimizer:
   type: 'adam'
@@ -37,6 +38,7 @@ trainer:
   max_epoch: 140
   gpu_ids: 0,1,2,3,4,5,6,7
   save_frequency: 10 # checkpoint save interval (in epoch)
+  max_checkpoints: 5  # keep only the last N checkpoints, 0 to disable cleanup
   find_unused_parameters: True
   # resume_model: 'checkpoints/checkpoint_epoch_70.pth'
 
