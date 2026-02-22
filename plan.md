@@ -40,7 +40,28 @@ $$L_{total} = L_{cls} + L_{bbox} + L_{dim} + \lambda \cdot L_{distill}$$
 - **前景加权 (Foreground-Aware)**：重点计算物体 Bounding Box 区域内的深度误差，背景区域赋予较低权重，避免背景噪声干扰。
 - **损失形式**：采用 $L1$ Loss 或 $Scale-Invariant Logarithmic (SILog)$ Loss 来衡量预测深度图 $D_{pred}$ 与 DA3 深度图 $D_{teacher}$ 的差异。
 
-### 4. 实验分析与可视化系统
+### 3. 不确定性引导的自适应深度蒸馏 (Uncertainty-Aware Adaptive Distillation)
+DA3 在物体边缘、透明/反光表面、极远距离处依然会产生深度估计误差。为了实现对噪声标签的鲁棒蒸馏：
+- 让网络在预测深度 $d$ 的同时，额外预测一个**深度不确定性（Variance, $\sigma^2$）**。
+- 引入 Kendall 不确定性损失重构蒸馏损失：$L_{distill} = \frac{||d_{pred} - d_{DA3}||^2}{2\sigma^2} + \frac{1}{2}\log(\sigma^2)$。
+- 当 DA3 伪标签与图像特征矛盾时，网络会自动预测较大的 $\sigma^2$ 降低惩罚权重。
+
+### 4. 深度引导的动态特征对齐 (Depth-Guided Dynamic Feature Alignment)
+为了让主干网络在提取特征时“主动”感知深度，而不仅仅在输出层进行蒸馏：
+- 在 Neck 层引入轻量级的**深度感知注意力模块 (Depth-Aware Attention)**。
+- 将 DA3 深度图下采样并生成 Spatial Attention Map，乘以 RGB 特征图，使网络根据物体远近动态调整特征提取侧重点。
+
+### 5. 基于 DA3 深度的 3D 感知数据增强 (3D-Aware DepthMix)
+针对单目 3D 检测的长尾分布问题，利用 DA3 深度图进行符合 3D 几何关系的 Copy-Paste：
+- 利用 2D Bbox + DA3 深度从图像中提取前景物体，粘贴到新图像中。
+- **遮挡处理**：比较粘贴物体的深度与背景对应位置的 DA3 深度，若大于背景深度则视为被遮挡，不予显示。
+
+### 6. 密集深度与 3D 边界框的几何一致性约束 (Depth-Geometry Consistency)
+解决“像素级深度”与“实例级深度”预测分支割裂的问题：
+- 提取 3D Bbox 中心点在密集深度图上的局部平均深度（Local Pooled Depth）。
+- 强制 3D Bbox 回归分支输出的深度 $Z_{bbox}$ 与该局部密集深度保持一致：$L_{consist} = || Z_{bbox} - \text{Pool}(D_{dense}, \text{box\_center}) ||$。
+
+### 7. 实验分析与可视化系统
 为了深入分析蒸馏效果并增强实验结果的可解释性，本项目将构建一套基于 **HTML + ECharts** 的交互式可视化看板：
 - **深度一致性分析**：利用 ECharts 的热力图（Heatmap）与 3D 散点图，在大规模测试集上可视化预测深度与 DA3/真值的分布偏差。
 - **性能多维对比**：使用雷达图（Radar Chart）对比不同 $\lambda$ 权重下 AP3D、APBEV、Heading 及距离误差等多项指标的平衡。
@@ -57,17 +78,24 @@ Python 环境：`/desay120T/ct/dev/uid01954/MonoDDLE/.venv`
 - [x] 编写并运行 `tools/generate_da3_depth.py`，调用 `Depth-Anything-3` 模型。
 - [x] 对 KITTI 训练集生成深度图伪标签 (`.npz` 格式)，完成可视化验证。
 
-### 第二阶段：损失函数开发 (进行中)
-- [ ] 修改数据加载器 (`lib/datasets/kitti/kitti_dataset.py`)，支持同步读取 `.npz` 深度文件。
-- [ ] 修改模型 (`lib/models/centernet3d.py`)，确保输出 dense depth map（现有 CenterNet 结构已支持，需确认分辨率对齐问题）。
-- [ ] 修改损失函数 (`lib/losses/loss_function.py`)，实现 $L_{distill}$
+### 第二阶段：损失函数开发与 DA3 蒸馏集成 (已完成)
+- [x] 修改数据加载器 (`lib/datasets/kitti/kitti_dataset.py`)，支持同步读取 `.npz` 深度文件。
+- [x] 修改模型 (`lib/models/centernet3d.py`)，确保输出 dense depth map。
+- [x] 修改损失函数 (`lib/losses/loss_function.py`)，实现 $L_{distill}$（支持 L1 / SILog + 前景加权）。
 
-### 第三阶段：实验与调优 (第4-5周)
+### 第三阶段：核心创新点开发 (进行中)
+- [ ] **不确定性蒸馏**：修改模型输出深度不确定性 $\sigma^2$，并实现 Kendall 不确定性损失。
+- [ ] **深度特征对齐**：在 Neck 层设计并接入 Depth-Aware Attention 模块。
+- [ ] **3D-Aware DepthMix**：开发基于 DA3 深度的 3D Copy-Paste 数据增强脚本。
+- [ ] **几何一致性约束**：实现 $L_{consist}$，对齐密集深度与 3D Bbox 中心深度。
+
+### 第四阶段：实验与调优 (计划中)
 - [ ] **实验 A (Baseline)**：复现原始 MonoDLE 精度。
-- [ ] **实验 B (Distill)**：加入 $L_{distill}$ 进行训练，调整权重 $\lambda$ (如 0.1, 1.0)。
-- [ ] **消融分析**：对比全图蒸馏 vs. 仅前景蒸馏的效果差异。
+- [ ] **实验 B (Distill)**：加入基础 $L_{distill}$ 进行训练，调整权重 $\lambda$。
+- [ ] **实验 C (创新点验证)**：逐步加入不确定性蒸馏、特征对齐、DepthMix 和几何一致性约束，记录性能提升。
+- [ ] **消融分析**：对比各创新模块（如全图 vs 前景、是否加不确定性、是否加一致性约束）的效果差异。
 
-### 第四阶段：数据分析与论文撰写 (第6周)
+### 第五阶段：数据分析与论文撰写 (第6周)
 - [ ] 依托 **HTML + ECharts** 技术栈构建实验分析看板，绘制多维度指标对比图与深度分布直方图。
 - [ ] 整理实验数据，输出交互式可视化结果（对比预测深度、真值与 DA3 教师深度）。
 - [ ] 撰写毕业论文。
@@ -76,6 +104,7 @@ Python 环境：`/desay120T/ct/dev/uid01954/MonoDDLE/.venv`
 
 ## 五、 预期成果与创新点
 
-1. **创新点**：提出了一种基于**视觉基础模型（VFM）绝对深度蒸馏**的单目3D检测训练范式，验证了 VFM 在几何感知任务中的迁移能力。
-2. **工程价值**：提供了一种“即插即用”的性能提升方案，无需修改部署模型结构，极易落地。
-3. **预期指标**：在 KITTI Easy/Moderate 难度下的 AP3D 指标预期提升 1-3 个百分点。
+1. **理论创新**：提出**不确定性引导的自适应深度蒸馏**与**几何一致性约束**，有效解决了视觉基础模型伪标签的局部噪声问题，并弥合了像素级深度与实例级深度之间的鸿沟。
+2. **结构与数据创新**：设计了**深度引导的动态特征对齐**模块，并提出了符合物理规律的 **3D-Aware DepthMix** 数据增强方法。
+3. **工程价值**：提供了一套完整的基于视觉大模型深度先验的单目 3D 检测提升方案，部分模块（如数据增强、Loss 约束）实现“即插即用”且零推理负担。
+4. **预期指标**：在 KITTI Easy/Moderate 难度下的 AP3D 指标预期提升 2-4 个百分点。
