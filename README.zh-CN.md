@@ -1,4 +1,4 @@
-# 基于视觉大模型度量深度蒸馏的单目3D目标检测 (MonoDDLE)
+# 基于深度估计和不确定性引导的3D目标检测研究分析
 
 [English README](README.md)
 
@@ -12,17 +12,17 @@
 
  KITTI 数据集上的部分可视化结果：
 
-|                            2D 边界框                             |                            3D 边界框                             |
-| :--------------------------------------------------------------: | :--------------------------------------------------------------: |
+|                         2D 边界框                         |                         3D 边界框                         |
+| :-------------------------------------------------------: | :-------------------------------------------------------: |
 | <img src="docs/images/2d.png" alt="2D BBox" width="400"/> | <img src="docs/images/3d.png" alt="3D BBox" width="400"/> |
 
-|                            DA3 深度伪标签                             |                               深度不确定性                                |
-| :-------------------------------------------------------------------: | :-----------------------------------------------------------------------: |
-| <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/> |
+|                        DA3 深度伪标签                        |                                                            深度不确定性                                                             |
+| :----------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------------: |
+| <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/><br><img src="docs/images/img.png" alt="Original Image" width="400"/> |
 
-|                         目标中心点热力图                         |                             LiDAR BEV 投影                              |
-| :--------------------------------------------------------------: | :---------------------------------------------------------------------: |
-| <img src="docs/images/hm.png" alt="Heatmap" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
+|                                                             目标中心点热力图                                                              |                         LiDAR BEV 投影                         |
+| :---------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------: |
+| <img src="docs/images/hm.png" alt="Heatmap" width="400"/><br><img src="docs/images/hm_perclass.png" alt="Heatmap Per-class" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
 
 **注：以上可视化结果对应的图像编号为 001230。**
 
@@ -80,6 +80,7 @@
 cd #ROOT
 uv venv .venv
 source .venv/bin/activate
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 uv pip install -r requirements.txt
 ```
 

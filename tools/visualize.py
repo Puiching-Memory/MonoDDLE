@@ -269,6 +269,23 @@ def add_legend(img, mode='3d', only_gt=False, only_pred=False):
         cv2.putText(img, text, (x0 + 22, y), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
 
 
+def _add_class_color_legend(img):
+    """在图像左上角添加类别颜色图例（按类名分色）。"""
+    items = [(cls, CLASS_COLORS[cls]) for cls in sorted(VALID_CLASSES) if cls in CLASS_COLORS]
+    if not items:
+        return
+    overlay = img.copy()
+    x0, y0, dy = 10, 10, 22
+    font, fs = cv2.FONT_HERSHEY_SIMPLEX, 0.55
+    bg_h = y0 + dy * len(items) + 10
+    bg_w = 180
+    cv2.rectangle(overlay, (x0 - 5, y0 - 5), (x0 + bg_w, bg_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, img, 0.5, 0, img)
+    for i, (cls_name, color) in enumerate(items):
+        y = y0 + dy * i + 15
+        cv2.rectangle(img, (x0, y - 10), (x0 + 15, y + 2), color, -1)
+        cv2.putText(img, cls_name, (x0 + 22, y), font, fs,
+                    (255, 255, 255), 1, cv2.LINE_AA)
 
 
 # ======================== 模型推理辅助 ========================
@@ -1038,6 +1055,9 @@ def visualize_lidar_perspective(velo_path, calib, gt_objects, pred_objects,
     # 浅色背景
     canvas = np.full((H, W, 3), [235, 235, 230], dtype=np.uint8)
 
+    # 先绘制距离参考线 (在点云层之下)
+    _draw_persp_distance_lines(canvas, R, t, focal, cx, cy, W, H)
+
     # 按深度排序: 远处先画, 近处后画
     order = np.argsort(-depth)
     uv, pts_y = uv[order], pts_y[order]
@@ -1080,7 +1100,6 @@ def visualize_lidar_perspective(velo_path, calib, gt_objects, pred_objects,
                     (int(uv_ego[0, 0]) - 15, int(uv_ego[0, 1]) - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 220), 2, cv2.LINE_AA)
 
-    _draw_persp_distance_lines(canvas, R, t, focal, cx, cy, W, H)
     # 裁剪顶部空白区域 (背景色 [235,235,230])
     canvas = _crop_persp_top_blank(canvas)
     _add_bev_legend(canvas)
@@ -1108,9 +1127,15 @@ def _crop_persp_top_blank(canvas, bg_color=(235, 235, 230), margin=20):
 
 
 def _draw_persp_distance_lines(canvas, R, t, focal, cx, cy, W, H):
-    """在透视视图中绘制深度参考线 (每 10m 一条, 在路面平面 y≈1.65 上)。"""
-    font, fs = cv2.FONT_HERSHEY_SIMPLEX, 0.5
+    """在透视视图中绘制深度参考线 (每 10m 一条, 在路面平面 y≈1.65 上)。
+
+    参考线使用浅色绘制, 距离标注放在画面左右边缘, 不干扰主视图。
+    """
+    font, fs = cv2.FONT_HERSHEY_SIMPLEX, 0.45
     road_y = 1.65  # 路面高度 (相机坐标系, y 向下, KITTI 典型值)
+    line_color = (210, 210, 205)  # 极浅灰, 接近背景
+    text_color = (140, 140, 140)
+    margin = 8  # 距边缘像素
     for z_m in range(10, 71, 10):
         # 在 z=z_m, y=road_y 平面绘一条 x 方向的线
         pts = np.array([[-40, road_y, z_m], [40, road_y, z_m]], dtype=np.float32)
@@ -1121,14 +1146,141 @@ def _draw_persp_distance_lines(canvas, R, t, focal, cx, cy, W, H):
         x2, y2 = int(uv[1, 0]), int(uv[1, 1])
         if (y1 < 0 and y2 < 0) or (y1 >= H and y2 >= H):
             continue
-        cv2.line(canvas, (x1, y1), (x2, y2), (180, 180, 180), 1, cv2.LINE_AA)
-        # 标注距离
-        label_pt = np.array([[2, road_y, z_m]], dtype=np.float32)
-        luv, _, lv = _project_perspective(label_pt, R, t, focal, cx, cy)
-        if lv[0] and 0 <= luv[0, 0] < W and 0 <= luv[0, 1] < H:
-            cv2.putText(canvas, f'{z_m}m',
-                        (int(luv[0, 0]) + 4, int(luv[0, 1]) - 4),
-                        font, fs, (100, 100, 100), 1, cv2.LINE_AA)
+        cv2.line(canvas, (x1, y1), (x2, y2), line_color, 1, cv2.LINE_AA)
+        # 标注距离 — 左侧边缘
+        label = f'{z_m}m'
+        (tw, th), _ = cv2.getTextSize(label, font, fs, 1)
+        # 计算线在左边缘 (x=margin) 处的 y 坐标 (线性插值)
+        if x2 != x1:
+            y_at_left = int(y1 + (y2 - y1) * (margin - x1) / (x2 - x1))
+        else:
+            y_at_left = y1
+        if 0 <= y_at_left < H:
+            cv2.putText(canvas, label, (margin, y_at_left - 3),
+                        font, fs, text_color, 1, cv2.LINE_AA)
+
+
+# ======================== 组合 3D 可视化 (Pred + LiDAR 透视, 按类别着色) ========================
+
+def visualize_combined_pred_perspective(img, pred_objects, calib, velo_path,
+                                       gt_objects=None, thickness=2):
+    """生成组合图: 上=相机视角 Pred 3D 框, 下=LiDAR 透视 3D 视图, 按类别着色。
+
+    Args:
+        img: 原始 BGR 图像 (H, W, 3)
+        pred_objects: 预测目标 Object3d 列表 (已过滤)
+        calib: Calibration 实例
+        velo_path: velodyne .bin 文件路径
+        gt_objects: GT 目标 Object3d 列表 (可选, 在透视图中薄线显示)
+        thickness: 线宽
+    Returns:
+        BGR uint8 image, 或 None (点云文件不存在时)
+    """
+    if not os.path.exists(velo_path):
+        return None
+
+    # ---- 上半部: 相机视角 Pred 3D 框 (按类别着色) ----
+    pred_canvas = img.copy()
+    for obj in sort_by_depth(pred_objects):
+        corners_2d = project_3d_box_to_image(obj, calib)
+        if corners_2d is None:
+            continue
+        color = CLASS_COLORS.get(obj.cls_type, (200, 200, 200))
+        draw_3d_box(pred_canvas, corners_2d, color, thickness=thickness)
+    _add_class_color_legend(pred_canvas)
+
+    # ---- 下半部: LiDAR 透视视图 (仅 Pred, 按类别着色) ----
+    persp_canvas = _render_perspective_by_class(
+        velo_path, calib, pred_objects, thickness)
+    if persp_canvas is None:
+        return pred_canvas  # 无点云时仅返回上半部
+
+    # ---- 统一宽度后上下拼接 (等比缩放, 不留黑边) ----
+    tw = max(pred_canvas.shape[1], persp_canvas.shape[1])
+    panels = []
+    for p in [pred_canvas, persp_canvas]:
+        if p.shape[1] != tw:
+            new_h = int(p.shape[0] * tw / p.shape[1])
+            p = cv2.resize(p, (tw, new_h), interpolation=cv2.INTER_LINEAR)
+        panels.append(p)
+    sep = np.full((4, tw, 3), 80, dtype=np.uint8)
+    return np.vstack([panels[0], sep, panels[1]])
+
+
+def _render_perspective_by_class(velo_path, calib, pred_objects,
+                                 thickness=2):
+    """渲染 LiDAR 透视 3D 视图, 仅绘制 Pred 框并按类别着色。
+
+    Args:
+        velo_path: velodyne .bin 文件路径
+        calib: Calibration 实例
+        pred_objects: Pred Object3d 列表 (已过滤)
+        thickness: Pred 线宽
+    Returns:
+        BGR uint8 image, 或 None
+    """
+    if not os.path.exists(velo_path):
+        return None
+
+    pts_velo = load_velodyne(velo_path)
+    pts_rect = calib.lidar_to_rect(pts_velo[:, :3])
+
+    # 过滤范围
+    mask = ((pts_rect[:, 0] >= _BEV_X_RANGE[0]) &
+            (pts_rect[:, 0] <= _BEV_X_RANGE[1]) &
+            (pts_rect[:, 1] >= _BEV_Y_RANGE[0]) &
+            (pts_rect[:, 1] <= _BEV_Y_RANGE[1]) &
+            (pts_rect[:, 2] >= _BEV_Z_RANGE[0]) &
+            (pts_rect[:, 2] <= _BEV_Z_RANGE[1]))
+    pts = pts_rect[mask]
+
+    W, H = _PERSP_IMG_W, _PERSP_IMG_H
+    cx, cy = W / 2.0, H / 2.0
+    focal = _PERSP_FOCAL
+    R, t = _build_view_matrix(_CAM_EYE, _CAM_LOOKAT, _CAM_UP)
+
+    # 投影并渲染点云
+    uv, depth, valid = _project_perspective(pts, R, t, focal, cx, cy)
+    uv, depth, pts_y = uv[valid], depth[valid], pts[valid, 1]
+    canvas = np.full((H, W, 3), [235, 235, 230], dtype=np.uint8)
+
+    # 先绘制距离参考线 (在点云层之下)
+    _draw_persp_distance_lines(canvas, R, t, focal, cx, cy, W, H)
+
+    order = np.argsort(-depth)
+    uv, pts_y = uv[order], pts_y[order]
+    y_norm = np.clip((pts_y - _BEV_Y_RANGE[0]) /
+                     (_BEV_Y_RANGE[1] - _BEV_Y_RANGE[0]), 0.0, 1.0)
+    y_u8 = (y_norm * 255).astype(np.uint8)
+    lut_gray = np.arange(256, dtype=np.uint8).reshape(1, 256)
+    lut_bgr = cv2.applyColorMap(lut_gray, cv2.COLORMAP_MAGMA).reshape(256, 3)
+    for k in range(len(uv)):
+        px, py = int(uv[k, 0]), int(uv[k, 1])
+        if 0 <= px < W and 0 <= py < H:
+            c = tuple(int(v) for v in lut_bgr[y_u8[k]])
+            cv2.circle(canvas, (px, py), _PERSP_POINT_RADIUS, c, -1, cv2.LINE_AA)
+
+    # Pred 框: 类别颜色
+    for obj in sort_by_depth(pred_objects):
+        corners3d = obj.generate_corners3d()
+        cls_color = CLASS_COLORS.get(obj.cls_type, (200, 200, 200))
+        _draw_persp_3d_box(canvas, corners3d, R, t, focal, cx, cy,
+                           cls_color, thickness)
+
+    # 自车框
+    ego_corners = _ego_corners_3d()
+    _draw_persp_3d_box(canvas, ego_corners, R, t, focal, cx, cy,
+                       (0, 0, 220), thickness + 1)
+    ego_center = ego_corners.mean(axis=0, keepdims=True)
+    uv_ego, _, v_ego = _project_perspective(ego_center, R, t, focal, cx, cy)
+    if v_ego.any():
+        cv2.putText(canvas, 'EGO',
+                    (int(uv_ego[0, 0]) - 15, int(uv_ego[0, 1]) - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 220), 2, cv2.LINE_AA)
+
+    canvas = _crop_persp_top_blank(canvas)
+    _add_class_color_legend(canvas)
+    return canvas
 
 
 # ======================== 主流程 ========================
@@ -1378,13 +1530,15 @@ def main():
     out_da3 = os.path.join(args.output_dir, 'da3_depth')
     out_unc = os.path.join(args.output_dir, 'uncertainty')
     out_bev = os.path.join(args.output_dir, 'lidar_bev')
+    out_combined = os.path.join(args.output_dir, 'combined_3d')
     os.makedirs(out_3d, exist_ok=True)
     os.makedirs(out_2d, exist_ok=True)
     if os.path.isdir(velo_dir):
         os.makedirs(out_bev, exist_ok=True)
-        print(f"[INFO] 发现 velodyne 目录, 将生成 LiDAR BEV 视图")
+        os.makedirs(out_combined, exist_ok=True)
+        print(f"[INFO] 发现 velodyne 目录, 将生成 LiDAR BEV 视图 + 组合3D视图")
     else:
-        print(f"[INFO] 无 velodyne 目录 ({velo_dir}), 跳过 LiDAR BEV")
+        print(f"[INFO] 无 velodyne 目录 ({velo_dir}), 跳过 LiDAR BEV / 组合3D视图")
 
     # DA3 深度目录
     da3_dir = os.path.join(data_dir, 'DA3_depth_results')
@@ -1507,6 +1661,15 @@ def main():
                     combined = np.vstack([combined, sep, a])
                 cv2.imwrite(os.path.join(out_bev, f'{idx}_lidar.png'), combined)
 
+            # --- 组合 3D 视图 (Pred 相机 + LiDAR 透视, 按类别着色) ---
+            velo_path_combined = os.path.join(velo_dir, f'{idx}.bin')
+            combined_img = visualize_combined_pred_perspective(
+                img, pred_objects, calib, velo_path_combined,
+                gt_objects=gt_objects, thickness=args.thickness)
+            if combined_img is not None:
+                cv2.imwrite(os.path.join(out_combined, f'{idx}_combined.png'),
+                            combined_img)
+
         # --- 模型推理视图 ---
         da3_pred_img = None
         if vis_model is not None:
@@ -1561,6 +1724,7 @@ def main():
             print(f"  不确定性: {out_unc}/")
     if os.path.isdir(velo_dir):
         print(f"  LiDAR BEV: {out_bev}/")
+        print(f"  组合3D (Pred+LiDAR, 按类别着色): {out_combined}/")
     if os.path.isdir(da3_dir) or vis_model is not None:
         print(f"  DA3 深度 (GT/Pred 合并): {out_da3}/")
 

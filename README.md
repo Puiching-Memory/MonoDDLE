@@ -1,4 +1,4 @@
-# Monocular 3D Object Detection via Dense Depth Distillation from Vision Foundation Models (MonoDDLE)
+# Research and Analysis of 3D Object Detection Guided by Depth Estimation and Uncertainty
 
 [中文文档](README.zh-CN.md)
 
@@ -16,13 +16,13 @@ Sample visualization results on the KITTI dataset:
 | :-------------------------------------------------------: | :-------------------------------------------------------: |
 | <img src="docs/images/2d.png" alt="2D BBox" width="400"/> | <img src="docs/images/3d.png" alt="3D BBox" width="400"/> |
 
-|                    DA3 Depth Pseudo-label                    |                       Depth Uncertainty                        |
-| :----------------------------------------------------------: | :------------------------------------------------------------: |
-| <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/> |
+|                    DA3 Depth Pseudo-label                    |                                                          Depth Uncertainty                                                          |
+| :----------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------------: |
+| <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/><br><img src="docs/images/img.png" alt="Original Image" width="400"/> |
 
-|                   Object Center Heatmap                   |                      LiDAR BEV Projection                      |
-| :-------------------------------------------------------: | :------------------------------------------------------------: |
-| <img src="docs/images/hm.png" alt="Heatmap" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
+|                                                           Object Center Heatmap                                                           |                      LiDAR BEV Projection                      |
+| :---------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------: |
+| <img src="docs/images/hm.png" alt="Heatmap" width="400"/><br><img src="docs/images/hm_perclass.png" alt="Heatmap Per-class" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
 
 **Note: The above visualization results correspond to image ID 001230.**
 
@@ -80,6 +80,7 @@ Use `uv` to manage the Python environment and dependencies (the project uses a l
 cd #ROOT
 uv venv .venv
 source .venv/bin/activate
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 uv pip install -r requirements.txt
 ```
 
