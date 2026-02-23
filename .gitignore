@@ -1,15 +1,4 @@
-/.idea/
-.DS_Store
-*/.DS_Store
-*.pyc
-/data/KITTI/object
-train.log
-__pycache__/
-*.log
-*.pth
-*.pt
-/checkpoints/
-runs/
 data/
-temp/
 vis_output/
+experiments/results/
+__pycache__/

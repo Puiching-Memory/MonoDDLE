@@ -1,23 +1,80 @@
-# Delving into Localization Errors for Monocular 3D Detection
+# Monocular 3D Object Detection via Dense Depth Distillation from Vision Foundation Models (MonoDDLE)
 
 [中文文档](README.zh-CN.md)
 
-By [Xinzhu Ma](https://scholar.google.com/citations?user=8PuKa_8AAAAJ), Yinmin Zhang, [Dan Xu](https://www.danxurgb.net/), [Dongzhan Zhou](https://scholar.google.com/citations?user=Ox6SxpoAAAAJ), [Shuai Yi](https://scholar.google.com/citations?user=afbbNmwAAAAJ), [Haojie Li](https://scholar.google.com/citations?user=pMnlgVMAAAAJ), [Wanli Ouyang](https://wlouyang.github.io/).
-
-
 ## Introduction
 
-This repository is an official implementation of the paper ['Delving into Localization Errors for Monocular 3D Detection'](https://arxiv.org/abs/2103.16237). In this work, by intensive diagnosis experiments, we quantify the impact introduced by each sub-task and found the ‘localization error’ is the vital factor in restricting monocular 3D detection. Besides, we also investigate the underlying reasons behind localization errors, analyze the issues they might bring, and propose three strategies. 
+**MonoDDLE** (Monocular Dense Depth Distillation for Localization Errors) is an improved version based on [MonoDLE](https://github.com/XinzhuMa/MonoDLE). **The paper has not been published yet.**
 
-<img src="resources/example.jpg" alt="vis" style="zoom:50%;" />
+The core challenge of monocular 3D object detection lies in recovering the lost depth information from a single RGB image. Existing mainstream methods typically rely on sparse LiDAR point cloud ground truth for supervised training, suffering from sparsity and high data acquisition costs. This project leverages the absolute metric depth from vision foundation models (e.g., Depth Anything V3) as "soft labels" or "dense supervision signals", guiding lightweight monocular detectors to learn more robust depth features through knowledge distillation, thereby significantly improving detection accuracy without increasing inference cost.
 
+## Visualization Results
 
+Sample visualization results on the KITTI dataset:
+
+|                      2D Bounding Box                      |                      3D Bounding Box                      |
+| :-------------------------------------------------------: | :-------------------------------------------------------: |
+| <img src="docs/images/2d.png" alt="2D BBox" width="400"/> | <img src="docs/images/3d.png" alt="3D BBox" width="400"/> |
+
+|                    DA3 Depth Pseudo-label                    |                       Depth Uncertainty                        |
+| :----------------------------------------------------------: | :------------------------------------------------------------: |
+| <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/> |
+
+|                   Object Center Heatmap                   |                      LiDAR BEV Projection                      |
+| :-------------------------------------------------------: | :------------------------------------------------------------: |
+| <img src="docs/images/hm.png" alt="Heatmap" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
+
+**Note: The above visualization results correspond to image ID 001230.**
+
+## Experimental Results
+
+We conducted extensive experiments on the KITTI dataset. Below are some core results (see `summary.md` in the repository root for full details):
+
+### 1. Main Results (KITTI Validation Set)
+
+| Method              |  3D@0.7 (Easy/Mod/Hard)   |  BEV@0.7 (Easy/Mod/Hard)  |  3D@0.5 (Easy/Mod/Hard)   |  BEV@0.5 (Easy/Mod/Hard)  |
+| :------------------ | :-----------------------: | :-----------------------: | :-----------------------: | :-----------------------: |
+| CenterNet           |    0.60 / 0.66 / 0.77     |    3.46 / 3.31 / 3.21     |   20.00 / 17.50 / 15.57   |   34.36 / 27.91 / 24.65   |
+| MonoGRNet           |    11.90 / 7.56 / 5.76    |   19.72 / 12.81 / 10.15   |   47.59 / 32.28 / 25.50   |   48.53 / 35.94 / 28.59   |
+| MonoDIS             |    11.06 / 7.60 / 6.37    |   18.45 / 12.58 / 10.66   |             -             |             -             |
+| M3D-RPN             |   14.53 / 11.07 / 8.65    |   20.85 / 15.62 / 11.88   |   48.53 / 35.94 / 28.59   |   53.35 / 39.60 / 31.76   |
+| MonoPair            |   16.28 / 12.30 / 10.42   |   24.12 / 18.17 / 15.76   |   55.38 / 42.39 / 37.99   |   61.06 / 47.63 / 41.92   |
+| MonoDLE (Re-impl.)  |   15.17 / 12.10 / 10.82   |   21.10 / 17.20 / 15.10   |   50.70 / 38.91 / 34.82   |   56.94 / 43.74 / 38.41   |
+| **MonoDDLE (Ours)** | **18.49 / 14.48 / 12.14** | **26.38 / 20.12 / 17.89** | **59.80 / 43.89 / 39.27** | **65.10 / 48.85 / 42.97** |
+
+### 2. Ablation Study: DA3 Depth & Uncertainty
+
+| Method            | DA3 Depth | Uncertainty | 3D AP<sub>R40</sub> (E / M / H) | BEV AP<sub>R40</sub> (E / M / H) |
+| :---------------- | :-------: | :---------: | :-----------------------------: | :------------------------------: |
+| Baseline          |           |             |      15.17 / 12.10 / 10.82      |      21.10 / 17.20 / 15.10       |
+| + DA3             |     ✓     |             |      18.27 / 14.26 / 11.96      |      25.59 / 19.65 / 16.79       |
+| **+ Uncertainty** |   **✓**   |    **✓**    |    **18.49 / 14.48 / 12.14**    |    **26.38 / 20.12 / 17.89**     |
+
+### 3. Model Parameters & Computation
+
+| Model               | Backbone      | FLOPs (G) | Params (M) |
+| :------------------ | :------------ | :-------: | :--------: |
+| MonoDLE             | DLA-34        |   79.37   |   20.31    |
+| **MonoDDLE (Ours)** | **DLA-34**    | **83.91** | **20.46**  |
+|                     | HRNet-W32     |  212.25   |   48.91    |
+|                     | ResNet-50     |  439.70   |   91.41    |
+|                     | ConvNeXt-Tiny |  129.83   |   38.34    |
+
+### 4. Backbone Comparison (With DA3)
+
+| Backbone        | 3D AP<sub>R40</sub> (E / M / H) | BEV AP<sub>R40</sub> (E / M / H) |
+| :-------------- | :-----------------------------: | :------------------------------: |
+| DLA-34          |      17.52 / 13.59 / 12.06      |      25.46 / 19.69 / 17.01       |
+| HRNet-W32       |      17.87 / 13.72 / 11.73      |      24.79 / 19.23 / 16.58       |
+| ConvNeXtV2-Tiny |      17.17 / 13.25 / 11.69      |      24.97 / 19.42 / 16.74       |
+| ResNet-50       |      15.45 / 12.03 / 10.11      |      22.38 / 17.81 / 15.51       |
 
 
 ## Usage
 
-### Installation
-We recommend using `uv` to manage the Python environment and dependencies:
+### 1. Environment Setup
+
+Use `uv` to manage the Python environment and dependencies (the project uses a local `.venv` by default):
 
 ```bash
 cd #ROOT
@@ -26,280 +83,120 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-To pin a specific Python version:
+### 2. Data Preparation
+
+Download the [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d) and organize it as follows:
+
+```text
+MonoDDLE
+└── data
+    └── KITTI
+        ├── ImageSets         # Split files (provided in the repo)
+        ├── training
+        │   ├── calib
+        │   ├── image_2
+        │   └── label_2
+        ├── testing
+        │   ├── calib
+        │   └── image_2
+        └── DA3_depth_results # Required for DA3 distillation training
+            ├── 000000.npz
+            ├── 000000_vis.jpg
+            ├── 000001.npz
+            ├── 000001_vis.jpg
+            └── ...
+```
+
+Generate DA3 depth data using the following script (requires `depth_anything_3` to be installed):
 
 ```bash
-uv venv .venv --python 3.10
+python tools/generate_da3_depth.py --data_path data/KITTI --split training
 ```
 
-### Data Preparation
-Please download [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d) and organize the data as follows:
+The script generates two files per image:
+- **`.npz`**: Contains three keys — `depth` (H, W), `intrinsics` (3, 3), and `extrinsics` (3, 4), representing the DA3-predicted metric depth map, camera intrinsics, and extrinsics matrices respectively.
+- **`_vis.jpg`**: A vertically stacked visualization of the original image and the colorized depth map (for quick quality inspection).
 
-```
-#ROOT
-  |data/
-    |KITTI/
-      |ImageSets/ [already provided in this repo]
-      |training/
-        |calib/
-        |image_2/
-        |label_2/
-      |testing/
-        |calib/
-        |image_2/
-      |DA3_depth_results/   # optional, required for depth distillation
-        |000000.npz
-        |000001.npz
-        |...
-```
+> Note: Only the `depth` key from `.npz` files is used during training. `intrinsics` and `extrinsics` are saved as auxiliary information.
 
-The default data root is `data/KITTI` (i.e. `dataset.root_dir: 'data/KITTI'` in yaml).
+### 3. Training & Evaluation
 
-For DA3 depth distillation training, generate metric depth pseudo labels in advance and save them to `data/KITTI/DA3_depth_results`.
+`tools/train_val.py` resolves `dataset.root_dir` relative to the project root, so commands can be run directly from the repository root.
 
-Each depth file should be a `.npz` file with key `depth`.
-
-### Training & Evaluation
-
-Move to the workplace and train the network:
-
-> `tools/train_val.py` now resolves `dataset.root_dir` relative to project root.
-> You can run commands from repository root directly.
-
-#### Single-process DP mode (DataParallel, default)
+#### Single-process DP (default, DataParallel)
 
 ```sh
 cd #ROOT
-python tools/train_val.py --config experiments/configs/monodle/kitti_no_da3.yaml
+# Run MonoDDLE (with uncertainty distillation)
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml
 ```
 
-#### Multi-process DDP mode (DistributedDataParallel)
-
-DDP provides better scaling efficiency and avoids the GIL bottleneck of DP.
-Use `torchrun` to launch one process per GPU:
+#### Multi-process DDP (DistributedDataParallel)
 
 ```sh
 cd #ROOT
-# Auto-detect all available GPUs:
-bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3.yaml
-# Or specify the number of GPUs:
-bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3.yaml 4
-# Or use torchrun directly:
-torchrun --nproc_per_node=8 tools/train_val_ddp.py --config experiments/configs/monodle/kitti_da3.yaml
+# Automatically uses all visible GPUs
+bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3_uncertainty.yaml
 ```
 
-> **DP ↔ DDP equivalence**: MonoDLE is sensitive to batch size and learning rate.
-> When switching between DP and DDP, the hyperparameters must be adjusted to
-> produce equivalent training dynamics.  See the
-> [DP/DDP Equivalence](#dp--ddp-equivalence) section below for details.
-
-The model will be evaluated automatically if the training completed. If you only want evaluate your trained model (or the provided [pretrained model](https://drive.google.com/file/d/1jaGdvu_XFn5woX0eJ5I2R6wIcBLVMJV6/view?usp=sharing)) , you can modify the test part configuration in the .yaml file and use the following command:
+#### Evaluation Only
 
 ```sh
-python tools/train_val.py --config experiments/configs/monodle/kitti_da3.yaml -e
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml -e
 ```
 
-### Depth Distillation (DA3)
+### 4. DA3 Depth Distillation & Uncertainty
 
-The training pipeline supports dense depth distillation without changing the model architecture:
+#### DA3 Depth Distillation
 
-\[
-L_{total} = L_{base} + \lambda \cdot L_{distill}
-\]
+This project uses [Depth Anything V3](https://github.com/DepthAnything/Depth-Anything-V3) as the teacher model to pre-generate dense metric depth maps as pseudo-labels, providing additional supervision to the detector's depth prediction head via a distillation loss — without modifying the detector backbone architecture.
 
-where `L_distill` can be configured as weighted `l1` or `silog`, and foreground regions receive larger weights.
+Before running distillation training, generate the DA3 depth pseudo-labels first (see Section 2 — Data Preparation):
 
-Enable the following options in yaml:
+```bash
+python tools/generate_da3_depth.py --data_path data/KITTI --split training
+```
+
+Each `.npz` file contains `depth`, `intrinsics`, and `extrinsics` keys, along with a `_vis.jpg` visualization image. Only the `depth` key is read during training.
+
+The total distillation loss is:
+
+$$
+L_{total} = L_{cls} + L_{bbox} + L_{dim} + \lambda \cdot L_{distill}
+$$
+
+where $L_{distill}$ is the L1 or SiLog loss between the predicted depth and the DA3 pseudo-label, and $\lambda$ is the distillation weight. The minimal YAML configuration to enable depth distillation:
 
 ```yaml
 dataset:
   use_da3_depth: True
+```
+
+#### Uncertainty-Guided Adaptive Distillation
+
+Building upon DA3 depth distillation, we further introduce **per-pixel uncertainty prediction**, enabling the model to adaptively estimate confidence for the DA3 pseudo-labels. Regions with high uncertainty (e.g., reflective surfaces, occlusion boundaries) will automatically receive lower distillation loss weights, mitigating the negative impact of noisy pseudo-labels:
+
+$$
+L_{distill}^{unc} = \frac{1}{N} \sum_{i} \frac{|d_i - \hat{d}_i|}{\sigma_i} + \log \sigma_i
+$$
+
+where $\sigma_i$ is the model-predicted depth uncertainty, $d_i$ is the DA3 pseudo-label, and $\hat{d}_i$ is the model-predicted depth. To enable uncertainty-guided distillation, set the following in the YAML config:
+
+```yaml
+dataset:
+  use_da3_depth: True # DA3 depth distillation must be enabled
 
 distill:
   lambda: 0.5
   loss_type: 'l1'           # 'l1' or 'silog'
   foreground_weight: 5.0
+  use_uncertainty: True     # Enable uncertainty-guided adaptive depth distillation
 ```
 
-Then train as usual (example):
+## Acknowledgements
 
-```sh
-cd #ROOT
-python tools/train_val.py --config experiments/configs/monodle/kitti_da3.yaml
-```
-
-To disable distillation, set `distill.lambda: 0.0` or `dataset.use_da3_depth: False`.
-
-### Ultralytics Backbone Integration (YOLO8/11/26)
-
-The project supports replacing only the backbone with Ultralytics YOLO while keeping the original `DLAUp + CenterNet3D heads + loss` unchanged.
-
-Supported backbone keywords in yaml:
-
-- `yolo8`  (default weight: `yolov8n.pt`)
-- `yolo11` (default weight: `yolo11n.pt`)
-- `yolo26` (default weight: `yolo26n.pt`)
-
-Optional model fields:
-
-```yaml
-model:
-  type: 'centernet3d'
-  backbone: 'yolo11'
-  ultralytics_model: 'yolo11n.pt'   # override weight path if needed
-  feature_strides: [4, 8, 16, 32]   # multiscale features for DLAUp
-  # feature_indices: [2, 15, 18, 21] # optional manual override
-  # freeze_backbone: False            # optional
-```
-
-### Ablation Configs (YOLO vs YOLO+DA3)
-
-The following configs are provided under `experiments/configs/ablation`:
-
-| Group           | Config                                       |
-| --------------- | -------------------------------------------- |
-| YOLO8 baseline  | `experiments/configs/ablation/kitti_yolo8.yaml`      |
-| YOLO8 + DA3     | `experiments/configs/ablation/kitti_yolo8_da3.yaml`  |
-| YOLO11 baseline | `experiments/configs/ablation/kitti_yolo11.yaml`     |
-| YOLO11 + DA3    | `experiments/configs/ablation/kitti_yolo11_da3.yaml` |
-| YOLO26 baseline | `experiments/configs/ablation/kitti_yolo26.yaml`     |
-| YOLO26 + DA3    | `experiments/configs/ablation/kitti_yolo26_da3.yaml` |
-
-Run examples from repo root:
-
-```sh
-# baseline
-python tools/train_val.py --config experiments/configs/ablation/kitti_yolo8.yaml
-
-# +DA3 distillation
-python tools/train_val.py --config experiments/configs/ablation/kitti_yolo8_da3.yaml
-
-# DDP ablation (same equivalent total batch as DP)
-bash experiments/scripts/train_ddp.sh experiments/configs/ablation/kitti_yolo8_da3.yaml 2
-```
-
-Evaluate only:
-
-```sh
-python tools/train_val.py --config experiments/configs/ablation/kitti_yolo11_da3.yaml -e
-
-```
-
-Experiment structure overview:
-
-```text
-experiments/
-  configs/
-    monodle/
-    ablation/
-  scripts/
-  results/
-    <config_rel_path>/
-      <timestamp>/
-        checkpoints/
-        outputs/
-        logs/
-```
-
-> Note: on first use, Ultralytics may download/cache model assets automatically.
-
-### DP / DDP Equivalence
-
-MonoDLE's training is **highly sensitive** to batch size and learning rate.
-When migrating from DP to DDP (or changing the number of GPUs), incorrect
-hyperparameter settings will cause significant accuracy degradation.
-All experiment YAMLs under `experiments/configs/monodle` and `experiments/configs/ablation`
-already include `distributed.dp_reference`, so DP/DDP ablation can be run with
-equivalent effective total batch size by default.
-
-#### Quick rules
-
-| Scenario                     | `batch_size` (YAML)         | `lr`                                              |
-| ---------------------------- | --------------------------- | ------------------------------------------------- |
-| **DP** (default)             | Total batch across all GPUs | As configured                                     |
-| **DDP** (same total batch)   | `DP_batch / world_size`     | **Same** as DP                                    |
-| **DDP** (larger total batch) | Any per-GPU value           | `DP_lr × (DDP_total / DP_total)` (linear scaling) |
-
-#### Why they are equivalent
-
-In DP, the gradient is `g = (1/B) Σ ∇L_i` computed on the full batch *B*.
-
-In DDP with *N* ranks each holding *b = B/N* samples:
-```
-g_k   = (1/b) Σ_{j∈rank_k} ∇L_j
-g_ddp = (1/N) Σ_k g_k = (1/B) Σ ∇L_i = g_dp   ✓
-```
-
-So when `b × N = B`, the gradient (and therefore the training) is mathematically identical and no LR change is needed.
-
-When the total batch size changes, the **linear scaling rule** applies:
-`lr_ddp = lr_dp × (b × N) / B`.
-
-#### Equivalence calculator
-
-A standalone calculator is provided to compute the exact hyperparameters:
-
-```sh
-# Default: DP batch=16, lr=0.00125, 8 GPUs → DDP on 4 GPUs
-python tools/dp_ddp_equivalence.py --dp-batch 16 --dp-lr 0.00125 --dp-gpus 8 --ddp-gpus 4
-
-# With detailed math derivation
-python tools/dp_ddp_equivalence.py --verbose
-
-# With numerical gradient comparison simulation
-python tools/dp_ddp_equivalence.py --simulate
-```
-
-#### Auto-equivalence in DDP config
-
-Add a `distributed.dp_reference` section to your YAML and `train_val_ddp.py`
-will **automatically override** `batch_size` and `lr` to match the DP reference:
-
-```yaml
-distributed:
-  enabled: true
-  dp_reference:
-    total_batch_size: 16
-    lr: 0.00125
-    num_gpus: 8
-```
-
-#### Note on object-level loss normalisation
-
-Some MonoDLE losses (2D/3D offset, size) use `mean(valid_objects)` instead of
-`mean(batch_size)`.  DP computes these on the *gathered* full batch; DDP
-computes per-process means then averages.  This introduces a tiny gradient
-discrepancy when the number of valid objects per GPU is unequal.  On KITTI this
-difference is typically < 0.1% and has no measurable impact on AP.
-
-For ease of use, we also provide a pre-trained checkpoint, which can be used for evaluation directly. See the below table to check the performance.
-
-|                   | AP40@Easy | AP40@Mod. | AP40@Hard |
-| ----------------- | --------- | --------- | --------- |
-| In original paper | 17.45     | 13.66     | 11.68     |
-| In this repo      | 17.94     | 13.72     | 12.10     |
-
-## Citation
-
-If you find our work useful in your research, please consider citing:
-
-```latex
-@InProceedings{Ma_2021_CVPR,
-author = {Ma, Xinzhu and Zhang, Yinmin, and Xu, Dan and Zhou, Dongzhan and Yi, Shuai and Li, Haojie and Ouyang, Wanli},
-title = {Delving into Localization Errors for Monocular 3D Object Detection},
-booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
-month = {June},
-year = {2021}}
-```
-
-## Acknowlegment
-
-This repo benefits from the excellent work [CenterNet](https://github.com/xingyizhou/CenterNet). Please also consider citing it.
+Thanks to the excellent implementations of [MonoDLE](https://github.com/XinzhuMa/MonoDLE) and [CenterNet](https://github.com/xingyizhou/CenterNet).
 
 ## License
 
-This project is released under the MIT License.
-
-## Contact
-
-If you have any question about this project, please feel free to contact xinzhu.ma@sydney.edu.au.
+Released under the MIT License.

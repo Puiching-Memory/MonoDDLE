@@ -71,7 +71,7 @@ DA3 在物体边缘、透明/反光表面、极远距离处依然会产生深度
 
 ## 四、 实施计划 (Implementation Roadmap)
 
-Python 环境：`/desay120T/ct/dev/uid01954/MonoDDLE/.venv`
+Python 环境：`.venv`
 
 ### 第一阶段：环境搭建与数据准备 (已完成)
 - [x] 跑通 `MonoDDLE` 基线训练代码 (KITTI数据集)。

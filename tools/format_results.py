@@ -46,7 +46,8 @@ def parse_log(log_path):
     return None
 
 def main():
-    results_dir = Path('/desay120T/ct/dev/uid01954/MonoDDLE/experiments/results')
+    project_root = Path(__file__).resolve().parents[1]
+    results_dir = project_root / 'experiments' / 'results'
     results = []
     
     for log_file in results_dir.rglob('train.log'):
@@ -67,7 +68,7 @@ def main():
     results.sort(key=lambda x: x['3d_mod_70'], reverse=True)
     
     # Write CSV
-    csv_path = 'experiments/results/summary.csv'
+    csv_path = project_root / 'summary.csv'
     with open(csv_path, 'w', newline='') as f:
         fieldnames = [
             'experiment', 
@@ -87,7 +88,7 @@ def main():
             writer.writerow(r)
             
     # Write Markdown
-    md_path = 'experiments/results/summary.md'
+    md_path = project_root / 'summary.md'
     with open(md_path, 'w') as f:
         f.write('# Experiment Results\n\n')
         f.write('| Experiment | 3D AP@0.7 (E/M/H) | BEV AP@0.7 (E/M/H) | 3D AP@0.5 (E/M/H) | BEV AP@0.5 (E/M/H) | BBox AP (E/M/H) | AOS (E/M/H) | FLOPs | Params | Timestamp |\n')

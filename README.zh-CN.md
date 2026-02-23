@@ -1,20 +1,80 @@
-# 单目 3D 检测定位误差研究（MonoDLE）
+# 基于视觉大模型度量深度蒸馏的单目3D目标检测 (MonoDDLE)
 
 [English README](README.md)
 
-作者： [Xinzhu Ma](https://scholar.google.com/citations?user=8PuKa_8AAAAJ), Yinmin Zhang, [Dan Xu](https://www.danxurgb.net/), [Dongzhan Zhou](https://scholar.google.com/citations?user=Ox6SxpoAAAAJ), [Shuai Yi](https://scholar.google.com/citations?user=afbbNmwAAAAJ), [Haojie Li](https://scholar.google.com/citations?user=pMnlgVMAAAAJ), [Wanli Ouyang](https://wlouyang.github.io/)
-
 ## 项目简介
 
-本仓库是论文 [Delving into Localization Errors for Monocular 3D Object Detection](https://arxiv.org/abs/2103.16237) 的官方实现。论文通过系统化诊断实验分析单目 3D 检测中的误差来源，指出定位误差是主要瓶颈，并提出了对应改进策略。
+ **MonoDDLE** (Monocular Dense Depth Distillation for Localization Errors) 是基于 [MonoDLE](https://github.com/XinzhuMa/MonoDLE) 的改进版本。**论文暂未发表。**
 
-<img src="resources/example.jpg" alt="vis" style="zoom:50%;" />
+3D目标检测的核心难点在于从单张RGB图像中恢复丢失的深度信息。现有的主流方法通常依赖稀疏的 LiDAR 点云真值进行监督训练，存在稀疏性和数据获取成本高的局限性。本项目旨在利用视觉基础模型（如 Depth Anything V3）的绝对度量深度作为“软标签”或“密集监督信号”，通过知识蒸馏的方式，指导轻量级单目检测器学习更鲁棒的深度特征，从而在不增加推理成本的前提下显著提升检测精度。
+
+## 可视化结果
+
+ KITTI 数据集上的部分可视化结果：
+
+|                            2D 边界框                             |                            3D 边界框                             |
+| :--------------------------------------------------------------: | :--------------------------------------------------------------: |
+| <img src="docs/images/2d.png" alt="2D BBox" width="400"/> | <img src="docs/images/3d.png" alt="3D BBox" width="400"/> |
+
+|                            DA3 深度伪标签                             |                               深度不确定性                                |
+| :-------------------------------------------------------------------: | :-----------------------------------------------------------------------: |
+| <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/> |
+
+|                         目标中心点热力图                         |                             LiDAR BEV 投影                              |
+| :--------------------------------------------------------------: | :---------------------------------------------------------------------: |
+| <img src="docs/images/hm.png" alt="Heatmap" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
+
+**注：以上可视化结果对应的图像编号为 001230。**
+
+## 实验结果
+
+我们在 KITTI 数据集上进行了广泛的实验，以下是部分核心实验结果（详细数据请参考仓库根目录下的 `summary.md`）：
+
+### 1. 核心结果对比 (KITTI Validation Set)
+
+| Method              |  3D@0.7 (Easy/Mod/Hard)   |  BEV@0.7 (Easy/Mod/Hard)  |  3D@0.5 (Easy/Mod/Hard)   |  BEV@0.5 (Easy/Mod/Hard)  |
+| :------------------ | :-----------------------: | :-----------------------: | :-----------------------: | :-----------------------: |
+| CenterNet           |    0.60 / 0.66 / 0.77     |    3.46 / 3.31 / 3.21     |   20.00 / 17.50 / 15.57   |   34.36 / 27.91 / 24.65   |
+| MonoGRNet           |    11.90 / 7.56 / 5.76    |   19.72 / 12.81 / 10.15   |   47.59 / 32.28 / 25.50   |   48.53 / 35.94 / 28.59   |
+| MonoDIS             |    11.06 / 7.60 / 6.37    |   18.45 / 12.58 / 10.66   |             -             |             -             |
+| M3D-RPN             |   14.53 / 11.07 / 8.65    |   20.85 / 15.62 / 11.88   |   48.53 / 35.94 / 28.59   |   53.35 / 39.60 / 31.76   |
+| MonoPair            |   16.28 / 12.30 / 10.42   |   24.12 / 18.17 / 15.76   |   55.38 / 42.39 / 37.99   |   61.06 / 47.63 / 41.92   |
+| MonoDLE (Re-impl.)  |   15.17 / 12.10 / 10.82   |   21.10 / 17.20 / 15.10   |   50.70 / 38.91 / 34.82   |   56.94 / 43.74 / 38.41   |
+| **MonoDDLE (Ours)** | **18.49 / 14.48 / 12.14** | **26.38 / 20.12 / 17.89** | **59.80 / 43.89 / 39.27** | **65.10 / 48.85 / 42.97** |
+
+### 2. 消融实验：DA3 深度与不确定性
+
+| Method            | DA3 Depth | Uncertainty | 3D AP<sub>R40</sub> (E / M / H) | BEV AP<sub>R40</sub> (E / M / H) |
+| :---------------- | :-------: | :---------: | :-----------------------------: | :------------------------------: |
+| Baseline          |           |             |      15.17 / 12.10 / 10.82      |      21.10 / 17.20 / 15.10       |
+| + DA3             |     ✓     |             |      18.27 / 14.26 / 11.96      |      25.59 / 19.65 / 16.79       |
+| **+ Uncertainty** |   **✓**   |    **✓**    |    **18.49 / 14.48 / 12.14**    |    **26.38 / 20.12 / 17.89**     |
+
+### 3. 模型参数量与计算量对比
+
+| Model               | Backbone      | FLOPs (G) | Params (M) |
+| :------------------ | :------------ | :-------: | :--------: |
+| MonoDLE             | DLA-34        |   79.37   |   20.31    |
+| **MonoDDLE (Ours)** | **DLA-34**    | **83.91** | **20.46**  |
+|                     | HRNet-W32     |  212.25   |   48.91    |
+|                     | ResNet-50     |  439.70   |   91.41    |
+|                     | ConvNeXt-Tiny |  129.83   |   38.34    |
+
+### 4. 不同骨干网络的影响 (With DA3)
+
+| Backbone        | 3D AP<sub>R40</sub> (E / M / H) | BEV AP<sub>R40</sub> (E / M / H) |
+| :-------------- | :-----------------------------: | :------------------------------: |
+| DLA-34          |      17.52 / 13.59 / 12.06      |      25.46 / 19.69 / 17.01       |
+| HRNet-W32       |      17.87 / 13.72 / 11.73      |      24.79 / 19.23 / 16.58       |
+| ConvNeXtV2-Tiny |      17.17 / 13.25 / 11.69      |      24.97 / 19.42 / 16.74       |
+| ResNet-50       |      15.45 / 12.03 / 10.11      |      22.38 / 17.81 / 15.51       |
+
 
 ## 使用说明
 
 ### 1. 环境安装
 
-当前推荐使用 `uv` 管理 Python 环境与依赖（项目默认使用仓库内 `.venv`）：
+ `uv` 管理 Python 环境与依赖（项目默认使用仓库内 `.venv`）：
 
 ```bash
 cd #ROOT
@@ -23,39 +83,41 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-如需指定 Python 版本，可使用：
-
-```bash
-uv venv .venv --python 3.10
-```
-
-> `requirements.txt` 已包含 `ultralytics`，用于 YOLO 骨干集成。
-
 ### 2. 数据准备
 
 请先下载 [KITTI 数据集](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d)，并按以下结构组织：
 
 ```text
-#ROOT
-  |data/
-    |KITTI/
-      |ImageSets/                 # 仓库已提供划分文件
-      |training/
-        |calib/
-        |image_2/
-        |label_2/
-      |testing/
-        |calib/
-        |image_2/
-      |DA3_depth_results/         # 可选；DA3 蒸馏训练必需
-        |000000.npz
-        |000001.npz
-        |...
+MonoDDLE
+└── data
+    └── KITTI
+        ├── ImageSets         # 仓库已提供划分文件
+        ├── training
+        │   ├── calib
+        │   ├── image_2
+        │   └── label_2
+        ├── testing
+        │   ├── calib
+        │   └── image_2
+        └── DA3_depth_results # DA3 蒸馏训练必需
+            ├── 000000.npz
+            ├── 000000_vis.jpg
+            ├── 000001.npz
+            ├── 000001_vis.jpg
+            └── ...
 ```
 
-默认数据根目录为 `data/KITTI`（即 YAML 中 `dataset.root_dir: 'data/KITTI'`）。
+生成 DA3 深度数据的脚本如下（需确保已安装 `depth_anything_3`）：
 
-DA3 蒸馏训练需要预先生成深度伪标签并保存到 `data/KITTI/DA3_depth_results`，每个文件是包含 `depth` 键的 `.npz`。
+```bash
+python tools/generate_da3_depth.py --data_path data/KITTI --split training
+```
+
+该脚本会为每张图像生成两个文件：
+- **`.npz`**：包含 `depth` (H, W)、`intrinsics` (3, 3)、`extrinsics` (3, 4) 三个键，分别为 DA3 预测的度量深度图、相机内参和外参矩阵
+- **`_vis.jpg`**：原图与彩色深度图的上下拼接可视化（用于快速检查深度质量）
+
+> 注：训练时仅使用 `.npz` 中的 `depth` 键，`intrinsics` 和 `extrinsics` 为辅助信息。
 
 ### 3. 训练与评估
 
@@ -65,7 +127,8 @@ DA3 蒸馏训练需要预先生成深度伪标签并保存到 `data/KITTI/DA3_de
 
 ```sh
 cd #ROOT
-python tools/train_val.py --config experiments/configs/monodle/kitti_no_da3.yaml
+# 运行 MonoDDLE (带不确定性蒸馏)
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml
 ```
 
 #### 多进程 DDP（DistributedDataParallel）
@@ -73,194 +136,67 @@ python tools/train_val.py --config experiments/configs/monodle/kitti_no_da3.yaml
 ```sh
 cd #ROOT
 # 自动使用全部可见 GPU
-bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3.yaml
-# 指定 GPU 数量
-bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3.yaml 4
-# 或直接 torchrun
-torchrun --nproc_per_node=8 tools/train_val_ddp.py --config experiments/configs/monodle/kitti_da3.yaml
+bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3_uncertainty.yaml
 ```
 
-如果只评估，不训练：
+python tools/train_val.py --config experiments/kitti/monodle_kitti.yaml
 
 ```sh
-python tools/train_val.py --config experiments/configs/monodle/kitti_da3.yaml -e
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml -e
 ```
 
-### 4. DA3 深度蒸馏
+### 4. DA3 深度蒸馏与不确定性
 
-训练支持在不改变检测网络结构的前提下加入稠密深度蒸馏：
+#### DA3 深度蒸馏
+
+本项目使用 [Depth Anything V3](https://github.com/DepthAnything/Depth-Anything-V3) 作为教师模型，预先生成全图稠密度量深度图作为伪标签，并通过蒸馏损失对检测器的深度预测头进行额外监督，无需改变检测器骨干网络结构。
+
+在运行深度蒸馏训练前，需先生成 DA3 深度伪标签（参见第 2 节数据准备）：
+
+```bash
+python tools/generate_da3_depth.py --data_path data/KITTI --split training
+```
+
+每个 `.npz` 文件包含 `depth`、`intrinsics`、`extrinsics` 三个键，同时生成 `_vis.jpg` 可视化图片。训练时仅读取 `depth` 键。
+
+蒸馏总损失为：
 
 $$
-L_{total} = L_{base} + \lambda \cdot L_{distill}
+L_{total} = L_{cls} + L_{bbox} + L_{dim} + \lambda \cdot L_{distill}
 $$
 
-其中 `L_distill` 支持 `l1` 或 `silog`，并可通过前景权重强化目标区域监督。
-
-YAML 示例：
+其中 $L_{distill}$ 为预测深度与 DA3 伪标签之间的 L1 或 SiLog 损失，$\lambda$ 为蒸馏权重。开启深度蒸馏的最小 YAML 配置如下：
 
 ```yaml
 dataset:
   use_da3_depth: True
+```
+
+#### 不确定性引导的自适应蒸馏
+
+在 DA3 深度蒸馏的基础上，进一步引入**逐像素不确定性预测**，使模型对 DA3 伪标签的置信度进行自适应建模。不确定性高的区域（如反光表面、遮挡边界）将自动降低蒸馏损失权重，从而减轻噪声伪标签的负面影响：
+
+$$
+L_{distill}^{unc} = \frac{1}{N} \sum_{i} \frac{|d_i - \hat{d}_i|}{\sigma_i} + \log \sigma_i
+$$
+
+其中 $\sigma_i$ 为模型预测的深度不确定性，$d_i$ 为 DA3 伪标签，$\hat{d}_i$ 为模型预测深度。开启不确定性引导只需在 YAML 中设置：
+
+```yaml
+dataset:
+  use_da3_depth: True # 必须开启 DA3 深度蒸馏
 
 distill:
   lambda: 0.5
   loss_type: 'l1'           # 'l1' 或 'silog'
   foreground_weight: 5.0
-```
-
-关闭蒸馏可设置：`distill.lambda: 0.0` 或 `dataset.use_da3_depth: False`。
-
-### 5. Ultralytics 骨干集成（YOLO8/11/26）
-
-本项目已支持仅替换骨干网络为 Ultralytics YOLO，保持原有 `DLAUp + CenterNet3D heads + loss` 不变。
-
-支持的 `model.backbone` 关键字：
-
-- `yolo8`
-- `yolo11`
-- `yolo26`
-
-支持的常见模型尺寸：`n / s / m / l / x`。
-
-对应默认权重命名：
-
-- YOLO8: `yolov8{size}.pt`（如 `yolov8s.pt`）
-- YOLO11: `yolo11{size}.pt`（如 `yolo11m.pt`）
-- YOLO26: `yolo26{size}.pt`（如 `yolo26x.pt`）
-
-配置示例：
-
-```yaml
-model:
-  type: 'centernet3d'
-  backbone: 'yolo11'
-  ultralytics_model: 'yolo11l.pt'   # 可改为本地权重路径
-  feature_strides: [4, 8, 16, 32]   # 提供给 DLAUp 的多尺度特征
-  # feature_indices: [2, 15, 18, 21] # 可选：手动指定特征层
-  # freeze_backbone: False            # 可选：冻结骨干
-```
-
-> 首次使用 Ultralytics 可能会自动下载/缓存模型资源。
-
-### 6. 消融实验配置（YOLO vs YOLO+DA3）
-
-已按 “系列/尺寸” 组织配置目录，并同时提供基线与 DA3：
-
-- 目录：`experiments/configs/ablation/{yolo8|yolo11|yolo26}/{n|s|m|l|x}/`
-- 基线：`kitti.yaml`
-- DA3：`kitti_da3.yaml`
-
-运行示例（仓库根目录）：
-
-```sh
-# YOLO8-n 基线
-python tools/train_val.py --config experiments/configs/ablation/yolo8/n/kitti.yaml
-
-# YOLO8-n +DA3
-python tools/train_val.py --config experiments/configs/ablation/yolo8/n/kitti_da3.yaml
-
-# YOLO11-l +DA3
-python tools/train_val.py --config experiments/configs/ablation/yolo11/l/kitti_da3.yaml
-
-# YOLO26-x 基线
-python tools/train_val.py --config experiments/configs/ablation/yolo26/x/kitti.yaml
-
-# DDP 消融（与 DP 保持等效总 batch）
-bash experiments/scripts/train_ddp.sh experiments/configs/ablation/yolo11/m/kitti_da3.yaml 2
-
-# 仅评估
-python tools/train_val.py --config experiments/configs/ablation/yolo26/s/kitti_da3.yaml -e
-```
-
-`experiments` 目录结构：
-
-```text
-experiments/
-  configs/
-    monodle/
-    ablation/
-      <family>/            # yolo8 / yolo11 / yolo26
-        <size>/            # n / s / m / l / x
-          kitti.yaml
-          kitti_da3.yaml
-  scripts/
-  results/
-    <config_rel_path>/
-      <timestamp>/
-        checkpoints/
-        outputs/
-        logs/
-```
-
-### 7. DP / DDP 等价性说明
-
-MonoDLE 对批大小和学习率非常敏感。DP 与 DDP 切换时，如果参数不等价，精度会明显下降。
-`experiments/configs/monodle` 与 `experiments/configs/ablation` 下所有实验 YAML
-均已包含 `distributed.dp_reference`，可直接开展 DP/DDP 消融并默认保持等效总 batch。
-
-#### 快速规则
-
-| 场景                 | YAML 中 `batch_size`    | `lr`           |
-| -------------------- | ----------------------- | -------------- |
-| DP（默认）           | 所有 GPU 的总 batch     | 配置值         |
-| DDP（总 batch 不变） | `DP_batch / world_size` | 与 DP 相同     |
-| DDP（总 batch 变大） | 任意每卡 batch          | 按线性规则缩放 |
-
-线性缩放规则：
-
-`lr_ddp = lr_dp × (DDP_total / DP_total)`
-
-#### 等价性计算工具
-
-```sh
-python tools/dp_ddp_equivalence.py --dp-batch 16 --dp-lr 0.00125 --dp-gpus 8 --ddp-gpus 4
-python tools/dp_ddp_equivalence.py --verbose
-python tools/dp_ddp_equivalence.py --simulate
-```
-
-#### 在 DDP 配置中自动等价
-
-在 YAML 中加入：
-
-```yaml
-distributed:
-  enabled: true
-  dp_reference:
-    total_batch_size: 16
-    lr: 0.00125
-    num_gpus: 8
-```
-
-`train_val_ddp.py` 会自动覆盖 `batch_size` 与 `lr` 以匹配 DP 参考设置。
-
-## 预训练模型结果
-
-|            | AP40@Easy | AP40@Mod. | AP40@Hard |
-| ---------- | --------- | --------- | --------- |
-| 论文结果   | 17.45     | 13.66     | 11.68     |
-| 本仓库复现 | 17.94     | 13.72     | 12.10     |
-
-## 引用
-
-如果本项目对你的研究有帮助，请引用：
-
-```latex
-@InProceedings{Ma_2021_CVPR,
-author = {Ma, Xinzhu and Zhang, Yinmin, and Xu, Dan and Zhou, Dongzhan and Yi, Shuai and Li, Haojie and Ouyang, Wanli},
-title = {Delving into Localization Errors for Monocular 3D Object Detection},
-booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
-month = {June},
-year = {2021}}
+  use_uncertainty: True     # 开启不确定性引导的自适应深度蒸馏
 ```
 
 ## 致谢
 
-本仓库受益于 [CenterNet](https://github.com/xingyizhou/CenterNet) 的优秀实现。
+ [MonoDLE](https://github.com/XinzhuMa/MonoDLE) 和 [CenterNet](https://github.com/xingyizhou/CenterNet) 的优秀实现。
 
 ## 许可证
 
-本项目基于 MIT License 开源。
-
-## 联系方式
-
-如有问题，请联系：xinzhu.ma@sydney.edu.au
+ MIT License 开源。
