@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from lib.helpers.decode_helper import _transpose_and_gather_feat
 from lib.losses.focal_loss import focal_loss_cornernet
 from lib.losses.uncertainty_loss import laplacian_aleatoric_uncertainty_loss
+from lib.losses.uncertainty_loss import kendall_uncertainty_distill_loss
 from lib.losses.dim_aware_loss import dim_aware_l1_loss
 
 
@@ -33,11 +34,20 @@ def compute_centernet3d_loss(input, target, distill_lambda=0.0, distill_cfg=None
 
     if distill_lambda > 0 and 'da3_depth' in target:
         _cfg = distill_cfg or {}
-        distill_loss = compute_dense_depth_distill_loss(
-            input, target,
-            loss_type=_cfg.get('loss_type', 'l1'),
-            foreground_weight=_cfg.get('foreground_weight', 5.0),
-        )
+        use_uncertainty = _cfg.get('use_uncertainty', False)
+
+        if use_uncertainty and 'dense_depth_uncertainty' in input:
+            distill_loss = compute_uncertainty_depth_distill_loss(
+                input, target,
+                foreground_weight=_cfg.get('foreground_weight', 5.0),
+            )
+            stats_dict['distill_unc'] = distill_loss.item()
+        else:
+            distill_loss = compute_dense_depth_distill_loss(
+                input, target,
+                loss_type=_cfg.get('loss_type', 'l1'),
+                foreground_weight=_cfg.get('foreground_weight', 5.0),
+            )
         stats_dict['distill'] = distill_loss.item()
         total_loss = total_loss + distill_lambda * distill_loss
 
@@ -120,6 +130,51 @@ def extract_input_from_tensor(input, ind, mask):
 
 def extract_target_from_tensor(target, mask):
     return target[mask.bool()]
+
+
+def compute_uncertainty_depth_distill_loss(input, target, foreground_weight=5.0):
+    """Uncertainty-aware depth distillation using Kendall's formulation.
+
+    The model predicts a per-pixel log-variance alongside the dense depth.
+    Pixels where the DA3 teacher label is unreliable will automatically
+    receive a larger predicted variance, down-weighting their contribution.
+
+    Args:
+        input: Model outputs dict containing 'depth' and 'dense_depth_uncertainty'.
+        target: Target dict containing 'da3_depth', 'da3_depth_mask', 'heatmap'.
+        foreground_weight: Extra weight multiplier for foreground pixels.
+
+    Returns:
+        Scalar distillation loss.
+    """
+    device = input['depth'].device
+
+    if 'da3_depth' not in target:
+        return torch.tensor(0.0, device=device)
+
+    # Dense predicted depth: inverse-sigmoid transform (same as instance depth)
+    raw = input['depth'][:, 0:1]
+    pred_depth = 1.0 / (raw.sigmoid() + 1e-6) - 1.0
+
+    # Predicted log-variance from uncertainty head
+    log_variance = input['dense_depth_uncertainty']  # (B, 1, H, W)
+
+    teacher_depth = target['da3_depth']
+    valid_mask = target['da3_depth_mask']
+
+    if valid_mask.sum() == 0:
+        return torch.tensor(0.0, device=device)
+
+    # Foreground-aware weighting
+    heatmap = target['heatmap']
+    fg = heatmap.max(dim=1, keepdim=True)[0]
+    weight = 1.0 + (foreground_weight - 1.0) * fg
+    weight = weight * valid_mask
+
+    loss = kendall_uncertainty_distill_loss(
+        pred_depth, teacher_depth, log_variance, weight=weight
+    )
+    return loss
 
 
 def compute_dense_depth_distill_loss(input, target, loss_type='l1',

@@ -12,3 +12,4 @@ __pycache__/
 runs/
 data/
 temp/
+vis_output/

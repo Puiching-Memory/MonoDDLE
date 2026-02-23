@@ -75,6 +75,7 @@ class CenterNet3D(nn.Module):
         model_cfg = model_cfg or {}
 
         self.heads = {'heatmap': num_class, 'offset_2d': 2, 'size_2d' :2, 'depth': 2, 'offset_3d': 2, 'size_3d':3, 'heading': 24}
+        self.use_distill_uncertainty = model_cfg.get('use_distill_uncertainty', False)
         if str(backbone).lower().startswith('yolo'):
             default_model = {
                 'yolov8': 'yolov8n.pt',
@@ -140,6 +141,15 @@ class CenterNet3D(nn.Module):
 
             self.__setattr__(head, fc)
 
+        # Optional dense depth uncertainty head for uncertainty-aware distillation
+        if self.use_distill_uncertainty:
+            self.dense_depth_uncertainty = nn.Sequential(
+                nn.Conv2d(head_in_channels, 256, kernel_size=3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0, bias=True),
+            )
+            # Initialize to small uncertainty (log_var ≈ 0 → σ² ≈ 1)
+            self.fill_fc_weights(self.dense_depth_uncertainty)
 
     def forward(self, input):
         feat = self.backbone(input)
@@ -151,6 +161,9 @@ class CenterNet3D(nn.Module):
         ret = {}
         for head in self.heads:
             ret[head] = self.__getattr__(head)(feat)
+
+        if self.use_distill_uncertainty:
+            ret['dense_depth_uncertainty'] = self.dense_depth_uncertainty(feat)
 
         return ret
 
