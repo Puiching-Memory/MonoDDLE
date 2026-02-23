@@ -1443,47 +1443,29 @@ def load_prediction(pred_path, score_thresh=0.2):
     return filtered
 
 
-def select_images_with_objects(idx_list, label_dir, pred_dir, num_images, seed, no_random):
+def select_images(idx_list, label_dir, num_images, seed, no_random):
     """
-    选择同时有真值和预测结果的图片。
-    优先选择目标数量较多的图片以获得更好的可视化效果。
+    从 idx_list 中选择图片进行可视化。
+    只要求 GT 标签文件存在即可入选，不依赖预测结果，
+    确保相同种子下不同配置/模型选出完全相同的图片。
     """
     candidates = []
     for idx in idx_list:
         gt_path = os.path.join(label_dir, f'{idx}.txt')
-        pred_path = os.path.join(pred_dir, f'{idx}.txt')
-
         if not os.path.exists(gt_path):
             continue
-
-        gt_objects = get_objects_from_label(gt_path)
-        valid_gt = [obj for obj in gt_objects if obj.cls_type in VALID_CLASSES]
-
-        pred_objects = []
-        if os.path.exists(pred_path):
-            pred_objects = get_objects_from_label(pred_path)
-            pred_objects = [obj for obj in pred_objects if obj.cls_type in VALID_CLASSES]
-
-        n_objects = len(valid_gt) + len(pred_objects)
-        if n_objects > 0:
-            candidates.append((idx, n_objects))
+        candidates.append(idx)
 
     if not candidates:
-        print("[WARNING] 没有找到包含目标的图片!")
+        print("[WARNING] 没有找到有效的标签文件!")
         return idx_list[:num_images]
 
     if no_random:
-        # 按目标数量排序，选最多的
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        selected = [c[0] for c in candidates[:num_images]]
+        selected = candidates[:num_images]
     else:
-        # 随机采样，但倾向于目标多的图片
         random.seed(seed)
-        # 从有较多目标的图片中随机选
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        top_pool = candidates[:min(len(candidates), num_images * 5)]
-        random.shuffle(top_pool)
-        selected = [c[0] for c in top_pool[:num_images]]
+        random.shuffle(candidates)
+        selected = candidates[:num_images]
 
     return selected
 
@@ -1585,8 +1567,8 @@ def main():
     print(f"[INFO] {args.split} 集共 {len(idx_list)} 张图片")
 
     # 选择要可视化的图片
-    selected = select_images_with_objects(
-        idx_list, label_dir, pred_dir, args.num_images, args.seed, args.no_random
+    selected = select_images(
+        idx_list, label_dir, args.num_images, args.seed, args.no_random
     )
     print(f"[INFO] 选择 {len(selected)} 张图片进行可视化")
     print(f"[INFO] 图片ID: {selected}")

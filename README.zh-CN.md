@@ -1,6 +1,23 @@
-# 基于深度估计和不确定性引导的3D目标检测研究分析
+<h1 align="center">基于深度估计和不确定性引导的3D目标检测研究分析</h1>
 
-[English README](README.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-blue.svg" alt="Python">
+  <img src="https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg" alt="PyTorch">
+  <img src="https://img.shields.io/badge/Task-3D%20Detection-brightgreen.svg" alt="Task">
+  <img src="https://img.shields.io/badge/Status-Research-yellow.svg" alt="Status">
+  <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen.svg" alt="PRs Welcome">
+</p>
+
+<p align="center">
+  <a href="README.md">English README</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/combined3.png" width="800"/><br>
+  <img src="docs/images/combined2.png" width="800"/><br>
+  <img src="docs/images/combined1.png" width="800"/>
+</p>
 
 ## 项目简介
 
