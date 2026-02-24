@@ -3,3 +3,5 @@ vis_output/
 vis_*/
 experiments/results/
 __pycache__/
+build/
+*.so

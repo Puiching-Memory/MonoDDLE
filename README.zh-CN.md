@@ -86,6 +86,38 @@
 | ConvNeXtV2-Tiny |      17.17 / 13.25 / 11.69      |      24.97 / 19.42 / 16.74       |
 | ResNet-50       |      15.45 / 12.03 / 10.11      |      22.38 / 17.81 / 15.51       |
 
+### 5. Oracle 分析：深度瓶颈与属性解耦
+
+为了深入探究模型性能的瓶颈以及各预测属性之间的耦合关系，我们进行了 Oracle 分析。通过在推理阶段将特定的预测头（如深度、尺寸、朝向等）替换为真实的 Ground Truth (GT) 值，我们观察了模型在不同深度区间下的 3D AP (R40) 表现。
+
+#### 整体 AP_R40 (Moderate) 总结
+
+| Method         | baseline | w/ gt proj. center | w/ gt depth | w/ gt location | w/ gt size_3d | w/ gt heading |
+| :------------- | :------: | :----------------: | :---------: | :------------: | :-----------: | :-----------: |
+| MonoDLE        |  12.09   |       12.10        |    51.92    |     58.20      |     11.97     |     10.60     |
+| MonoDDLE       |  14.26   |       10.09        |    21.91    |     21.79      |     5.24      |     4.91      |
+| **MonoDDLE+U** |  14.51   |       14.08        |  **48.22**  |   **51.95**    |   **13.50**   |   **11.56**   |
+
+#### 核心结论
+
+1. **深度估计是核心瓶颈**：当提供真实的深度信息 (`w/ gt depth`) 时，MonoDLE 和 MonoDDLE+U 的性能均出现了暴涨（分别达到 51.92 和 48.22）。这表明只要深度估计准确，现有的网络头已经具备非常强的 3D 框回归能力。
+2. **MonoDDLE 存在严重的属性耦合**：在提供完美的 GT 尺寸 (`w/ gt size_3d`) 或朝向 (`w/ gt heading`) 时，MonoDDLE 的性能反而从 14.26 暴跌至 5.24 和 4.91。这说明 MonoDDLE 在训练中产生了严重的“误差补偿”，模型依赖错误的尺寸或朝向来补偿错误的深度。即使提供真实深度，其性能也仅提升至 21.91，远低于其他模型。
+3. **MonoDDLE+U 成功实现了解耦**：引入不确定性引导后，MonoDDLE+U 完美解决了上述耦合问题。在提供真实深度时，其性能能够正常大幅跃升至 48.22；在提供真实尺寸或朝向时，也彻底消除了 MonoDDLE 中断崖式下跌的现象，证明其打破了属性间的病态耦合，具有更高的性能上限。
+
+#### 随深度变化的 AP 曲线
+
+| Baseline | w/ GT Depth |
+| :---: | :---: |
+| <img src="docs/images/oracle_baseline.png" alt="Oracle Baseline" width="400"/> | <img src="docs/images/oracle_gt_depth.png" alt="Oracle GT Depth" width="400"/> |
+
+| w/ GT Location | w/ GT Proj. Center |
+| :---: | :---: |
+| <img src="docs/images/oracle_gt_location.png" alt="Oracle GT Location" width="400"/> | <img src="docs/images/oracle_gt_proj_center.png" alt="Oracle GT Proj Center" width="400"/> |
+
+| w/ GT Size 3D | w/ GT Heading |
+| :---: | :---: |
+| <img src="docs/images/oracle_gt_size_3d.png" alt="Oracle GT Size 3D" width="400"/> | <img src="docs/images/oracle_gt_heading.png" alt="Oracle GT Heading" width="400"/> |
+
 
 ## 使用说明
 

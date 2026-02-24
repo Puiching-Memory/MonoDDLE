@@ -1,0 +1,347 @@
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{float}
+\usepackage{amssymb}
+\usepackage{fvextra}
+
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines=true,breakanywhere=true}
+
+\title{Analysis of Research on 3D Object Detection Guided by Depth Estimation and Uncertainty}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{center}
+    \href{https://img.shields.io/badge/License-MIT-blue.svg}{[License: MIT]}\quad
+    \href{https://img.shields.io/badge/Python-3.11\%2B-blue.svg}{[Python: 3.11+]}\quad
+    \href{https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg}{[PyTorch: 2.x]}\quad
+    \href{https://img.shields.io/badge/Task-3D\%20Detection-brightgreen.svg}{[Task: 3D Detection]}\quad
+    \href{https://img.shields.io/badge/Status-Research-yellow.svg}{[Status: Research]}\quad
+    \href{https://img.shields.io/badge/PRs-Welcome-brightgreen.svg}{[PRs: Welcome]}
+
+    \vspace{1em}
+    \href{README.md}{English README} | \href{README.zh-CN.md}{Chinese README}
+\end{center}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{docs/images/combined3.png}
+    \includegraphics[width=0.8\textwidth]{docs/images/combined2.png}
+    \includegraphics[width=0.8\textwidth]{docs/images/combined1.png}
+\end{figure}
+
+\section{Introduction}
+
+\textbf{MonoDDLE (Monocular Dense Depth Distillation for Localization Errors)} is an improved version based on \href{https://github.com/XinzhuMa/MonoDLE}{MonoDLE}. The paper has not been published yet.
+
+The core challenge of 3D object detection lies in recovering lost depth information from a single RGB image. Existing mainstream methods typically rely on sparse LiDAR point cloud ground truth for supervised training, which is limited by sparsity and high data acquisition costs. This project aims to use the absolute metric depth from visual foundation models (such as Depth Anything V3) as ``soft labels'' or ``dense supervision signals''. Through knowledge distillation, we guide lightweight monocular detectors to learn more robust depth features, thereby significantly improving detection accuracy without increasing inference costs.
+
+\section{Visualization Results}
+
+Some visualization results on the KITTI dataset:
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{cc}
+        2D Bounding Box & 3D Bounding Box \\
+        \includegraphics[width=0.45\textwidth]{docs/images/2d.png} & \includegraphics[width=0.45\textwidth]{docs/images/3d.png} \\
+        DA3 Depth Pseudo-Label & Depth Uncertainty \\
+        \includegraphics[width=0.45\textwidth]{docs/images/da3.png} & \includegraphics[width=0.45\textwidth]{docs/images/unc.png} \\
+         & \includegraphics[width=0.45\textwidth]{docs/images/img.png} \\
+        Object Center Heatmap & LiDAR BEV Projection \\
+        \includegraphics[width=0.45\textwidth]{docs/images/hm.png} & \includegraphics[width=0.45\textwidth]{docs/images/lidar.png} \\
+        \includegraphics[width=0.45\textwidth]{docs/images/hm_perclass.png} & \\
+    \end{tabular}
+    \caption*{Note: The image number corresponding to the above visualization results is 001230.}
+\end{table}
+
+\section{Experimental Results}
+
+We conducted extensive experiments on the KITTI dataset. The following are some core experimental results (for detailed data, please refer to \texttt{summary.md} in the root directory of the repository):
+
+\subsection{1. Core Results Comparison (KITTI Validation Set)}
+
+\begin{table}[H]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tabular}{lcccc}
+        \toprule
+        Method & 3D@0.7 (Easy/Mod/Hard) & BEV@0.7 (Easy/Mod/Hard) & 3D@0.5 (Easy/Mod/Hard) & BEV@0.5 (Easy/Mod/Hard) \\
+        \midrule
+        CenterNet & 0.60 / 0.66 / 0.77 & 3.46 / 3.31 / 3.21 & 20.00 / 17.50 / 15.57 & 34.36 / 27.91 / 24.65 \\
+        MonoGRNet & 11.90 / 7.56 / 5.76 & 19.72 / 12.81 / 10.15 & 47.59 / 32.28 / 25.50 & 48.53 / 35.94 / 28.59 \\
+        MonoDIS & 11.06 / 7.60 / 6.37 & 18.45 / 12.58 / 10.66 & --- & --- \\
+        M3D-RPN & 14.53 / 11.07 / 8.65 & 20.85 / 15.62 / 11.88 & 48.53 / 35.94 / 28.59 & 53.35 / 39.60 / 31.76 \\
+        MonoPair & 16.28 / 12.30 / 10.42 & 24.12 / 18.17 / 15.76 & 55.38 / 42.39 / 37.99 & 61.06 / 47.63 / 41.92 \\
+        MonoDLE (Re-impl.) & 15.17 / 12.10 / 10.82 & 21.10 / 17.20 / 15.10 & 50.70 / 38.91 / 34.82 & 56.94 / 43.74 / 38.41 \\
+        \textbf{MonoDDLE (Ours)} & \textbf{18.49 / 14.48 / 12.14} & \textbf{26.38 / 20.12 / 17.89} & \textbf{59.80 / 43.89 / 39.27} & \textbf{65.10 / 48.85 / 42.97} \\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table}
+
+\subsection{2. Ablation Study: DA3 Depth and Uncertainty}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcccc}
+        \toprule
+        Method & DA3 Depth & Uncertainty & 3D AP$_{R40}$ (E / M / H) & BEV AP$_{R40}$ (E / M / H) \\
+        \midrule
+        Baseline & & & 15.17 / 12.10 / 10.82 & 21.10 / 17.20 / 15.10 \\
+        + DA3 & $\checkmark$ & & 18.27 / 14.26 / 11.96 & 25.59 / 19.65 / 16.79 \\
+        \textbf{+ Uncertainty} & \textbf{\checkmark} & \textbf{\checkmark} & \textbf{18.49 / 14.48 / 12.14} & \textbf{26.38 / 20.12 / 17.89} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{3. Comparison of Model Parameters and Computation}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{llcc}
+        \toprule
+        Model & Backbone & FLOPs (G) & Params (M) \\
+        \midrule
+        MonoDLE & DLA-34 & 79.37 & 20.31 \\
+        \textbf{MonoDDLE (Ours)} & \textbf{DLA-34} & \textbf{83.91} & \textbf{20.46} \\
+         & HRNet-W32 & 212.25 & 48.91 \\
+         & ResNet-50 & 439.70 & 91.41 \\
+         & ConvNeXt-Tiny & 129.83 & 38.34 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{4. Impact of Different Backbones (With DA3)}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        Backbone & 3D AP$_{R40}$ (E / M / H) & BEV AP$_{R40}$ (E / M / H) \\
+        \midrule
+        DLA-34 & 17.52 / 13.59 / 12.06 & 25.46 / 19.69 / 17.01 \\
+        HRNet-W32 & 17.87 / 13.72 / 11.73 & 24.79 / 19.23 / 16.58 \\
+        ConvNeXtV2-Tiny & 17.17 / 13.25 / 11.69 & 24.97 / 19.42 / 16.74 \\
+        ResNet-50 & 15.45 / 12.03 / 10.11 & 22.38 / 17.81 / 15.51 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{5. Oracle Analysis: Depth Bottleneck and Attribute Decoupling}
+
+To deeply explore the bottlenecks of model performance and the coupling relationship between various prediction attributes, we conducted an Oracle analysis. By replacing specific prediction heads (such as depth, size, heading, etc.) with real Ground Truth (GT) values during the inference phase, we observed the 3D AP (R40) performance of the model in different depth intervals.
+
+\subsubsection*{Overall AP\_R40 (Moderate) Summary}
+
+\begin{table}[H]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tabular}{lcccccc}
+        \toprule
+        Method & baseline & with gt projection center & with gt depth & with gt location & with gt size 3D & with gt heading \\
+        \midrule
+        MonoDLE & 12.09 & 12.10 & 51.92 & 58.20 & 11.97 & 10.60 \\
+        MonoDDLE & 14.26 & 10.09 & 21.91 & 21.79 & 5.24 & 4.91 \\
+        \textbf{MonoDDLE+U} & 14.51 & 14.08 & \textbf{48.22} & \textbf{51.95} & \textbf{13.50} & \textbf{11.56} \\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table}
+
+\subsubsection*{Key Conclusions}
+
+\begin{enumerate}
+    \item \textbf{Depth estimation is the core bottleneck}: When providing real depth information (\texttt{w/ gt depth}), the performance of both MonoDLE and MonoDDLE+U skyrocketed (reaching 51.92 and 48.22 respectively). This indicates that as long as the depth estimation is accurate, the existing network heads already possess very strong 3D box regression capabilities.
+    \item \textbf{MonoDDLE has severe attribute coupling}: When providing perfect GT size (\texttt{w/ gt size\_3d}) or heading (\texttt{w/ gt heading}), the performance of MonoDDLE plummeted from 14.26 to 5.24 and 4.91 instead. This shows that MonoDDLE generated serious ``error compensation'' during training, where the model relies on incorrect size or heading to compensate for incorrect depth. Even when providing real depth, its performance only improved to 21.91, far lower than other models.
+    \item \textbf{MonoDDLE+U successfully achieved decoupling}: After introducing uncertainty guidance, MonoDDLE+U perfectly solved the above coupling problem. When providing real depth, its performance jumped significantly to 48.22 as expected; when providing real size or heading, it also completely eliminated the precipitous drop phenomenon in MonoDDLE, proving that it broke the pathological coupling between attributes and has a higher performance upper bound.
+\end{enumerate}
+
+\subsubsection*{AP Curves Varying with Depth}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{docs/images/oracle_baseline.png}
+        \caption*{Baseline}
+    \end{minipage}
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{docs/images/oracle_gt_depth.png}
+        \caption*{w/ GT Depth}
+    \end{minipage}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{docs/images/oracle_gt_location.png}
+        \caption*{w/ GT Location}
+    \end{minipage}
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{docs/images/oracle_gt_proj_center.png}
+        \caption*{w/ GT Proj. Center}
+    \end{minipage}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{docs/images/oracle_gt_size_3d.png}
+        \caption*{w/ GT Size 3D}
+    \end{minipage}
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{docs/images/oracle_gt_heading.png}
+        \caption*{w/ GT Heading}
+    \end{minipage}
+\end{figure}
+
+
+\section{Usage Instructions}
+
+\subsection{1. Environment Installation}
+
+\texttt{uv} manages the Python environment and dependencies (the project uses the \texttt{.venv} in the repository by default):
+
+\begin{verbatim}
+cd #ROOT
+uv venv .venv
+source .venv/bin/activate
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+uv pip install -r requirements.txt
+\end{verbatim}
+
+\subsection{2. Data Preparation}
+
+Please download the \href{http://www.cvlibs.net/datasets/kitti/eval_object.php?obj\_benchmark=3d}{KITTI dataset} first, and organize it as follows:
+
+\begin{verbatim}
+MonoDDLE
+`-- data
+    `-- KITTI
+        |-- ImageSets         # Split files provided by the repository
+        |-- training
+        |   |-- calib
+        |   |-- image_2
+        |   `-- label_2
+        |-- testing
+        |   |-- calib
+        |   `-- image_2
+        `-- DA3_depth_results # Required for DA3 distillation training
+            |-- 000000.npz
+            |-- 000000_vis.jpg
+            |-- 000001.npz
+            |-- 000001_vis.jpg
+            `-- ...
+\end{verbatim}
+
+The script to generate DA3 depth data is as follows (ensure \texttt{depth\_anything\_3} is installed):
+
+\begin{verbatim}
+python tools/generate_da3_depth.py --data_path data/KITTI --split training
+\end{verbatim}
+
+This script will generate two files for each image:
+\begin{itemize}
+    \item \textbf{\texttt{.npz}}: Contains three keys: \texttt{depth} (H, W), \texttt{intrinsics} (3, 3), and \texttt{extrinsics} (3, 4), which are the metric depth map predicted by DA3, camera intrinsics, and extrinsics matrices, respectively.
+    \item \textbf{\texttt{\_vis.jpg}}: Visualization of the original image concatenated vertically with the color depth map (for quick quality check of depth).
+\end{itemize}
+
+\begin{quote}
+Note: Only the \texttt{depth} key in \texttt{.npz} is used during training, \texttt{intrinsics} and \texttt{extrinsics} are auxiliary information.
+\end{quote}
+
+\subsection{3. Training and Evaluation}
+
+\texttt{tools/train\_val.py} will parse \texttt{dataset.root\_dir} as relative to the project root directory, so you can execute the command directly in the repository root directory.
+
+\subsubsection*{Single Process DP (Default, DataParallel)}
+
+\begin{verbatim}
+cd #ROOT
+# Run MonoDDLE (with uncertainty distillation)
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml
+\end{verbatim}
+
+\subsubsection*{Multi-Process DDP (DistributedDataParallel)}
+
+\begin{verbatim}
+cd #ROOT
+# Automatically use all visible GPUs
+bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3_uncertainty.yaml
+\end{verbatim}
+
+Run evaluation only:
+
+\begin{verbatim}
+python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml -e
+\end{verbatim}
+
+\subsection{4. DA3 Depth Distillation and Uncertainty}
+
+\subsubsection*{DA3 Depth Distillation}
+
+This project uses \href{https://github.com/DepthAnything/Depth-Anything-V3}{Depth Anything V3} as the teacher model to pre-generate full-image dense metric depth maps as pseudo-labels. Through distillation loss, it provides additional supervision to the depth prediction head of the detector without changing the backbone network structure of the detector.
+
+Before running depth distillation training, you need to generate DA3 depth pseudo-labels (see Section 2 Data Preparation):
+
+\begin{verbatim}
+python tools/generate_da3_depth.py --data_path data/KITTI --split training
+\end{verbatim}
+
+Each \texttt{.npz} file contains \texttt{depth}, \texttt{intrinsics}, and \texttt{extrinsics} keys, and a \texttt{\_vis.jpg} visualization image is generated simultaneously. Only the \texttt{depth} key is read during training.
+
+The total distillation loss is:
+
+\[
+L_{\text{total}} = L_{\text{cls}} + L_{\text{bbox}} + L_{\text{dim}} + \lambda \cdot L_{\text{distill}}
+\]
+
+Where $L_{distill}$ is the L1 or SiLog loss between the predicted depth and the DA3 pseudo-label, and $\lambda$ is the distillation weight. The minimum YAML configuration to enable depth distillation is as follows:
+
+\begin{verbatim}
+dataset:
+  use_da3_depth: True
+\end{verbatim}
+
+\subsubsection*{Uncertainty-Guided Adaptive Distillation}
+
+Based on DA3 depth distillation, \textbf{pixel-wise uncertainty prediction} is further introduced to adaptively model the confidence of the model in DA3 pseudo-labels. Regions with high uncertainty (such as reflective surfaces, occlusion boundaries) will automatically reduce the distillation loss weight, thereby mitigating the negative impact of noisy pseudo-labels:
+
+\[
+L_{\text{distill}}^{\text{unc}} = \frac{1}{N} \sum_{i} \frac{|d_i - \hat{d}_i|}{\sigma_i} + \log \sigma_i
+\]
+
+Where $\sigma_i$ denotes the model-predicted depth uncertainty, $d_i$ denotes the DA3 pseudo-label, and $\hat{d}_i$ denotes the model-predicted depth, and the YAML setting to enable uncertainty guidance is:
+
+\begin{verbatim}
+dataset:
+  use_da3_depth: True # Must enable DA3 depth distillation
+
+distill:
+  lambda: 0.5
+  loss_type: 'l1'           # 'l1' or 'silog'
+  foreground_weight: 5.0
+  use_uncertainty: True     # Enable uncertainty-guided adaptive depth distillation
+\end{verbatim}
+
+\section{Acknowledgements}
+
+Excellent implementations of \href{https://github.com/XinzhuMa/MonoDLE}{MonoDLE} and \href{https://github.com/xingyizhou/CenterNet}{CenterNet}.
+
+\section{License}
+
+Open sourced under MIT License.
+
+\end{document}

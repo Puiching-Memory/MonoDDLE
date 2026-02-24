@@ -1,4 +1,4 @@
-<h1 align="center">Research and Analysis of 3D Object Detection Based on Depth Estimation and Uncertainty Guidance</h1>
+<h1 align="center">Analysis of Research on 3D Object Detection Guided by Depth Estimation and Uncertainty</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="README.zh-CN.md">中文说明</a>
+  <a href="README.zh-CN.md">Chinese README</a>
 </p>
 
 <p align="center">
@@ -19,35 +19,35 @@
   <img src="docs/images/combined1.png" width="800"/>
 </p>
 
-## Project Introduction
+## Introduction
 
-**MonoDDLE** (Monocular Dense Depth Distillation for Localization Errors) is an improved version based on [MonoDLE](https://github.com/XinzhuMa/MonoDLE). **The paper is not yet published.**
+**MonoDDLE** (Monocular Dense Depth Distillation for Localization Errors) is an improved version based on [MonoDLE](https://github.com/XinzhuMa/MonoDLE). **The paper has not been published yet.**
 
-The core challenge of 3D object detection lies in recovering lost depth information from a single RGB image. Existing mainstream methods typically rely on sparse LiDAR point cloud ground truth for supervised training, which has limitations due to sparsity and high data acquisition costs. This project aims to utilize absolute metric depth from visual foundation models (such as Depth Anything V3) as "soft labels" or "dense supervision signals." Through knowledge distillation, it guides a lightweight monocular detector to learn more robust depth features, significantly improving detection accuracy without increasing inference cost.
+The core challenge of 3D object detection lies in recovering lost depth information from a single RGB image. Existing mainstream methods typically rely on sparse LiDAR point cloud ground truth for supervised training, which is limited by sparsity and high data acquisition costs. This project aims to use the absolute metric depth from visual foundation models (such as Depth Anything V3) as "soft labels" or "dense supervision signals." Through knowledge distillation, we guide lightweight monocular detectors to learn more robust depth features, thereby significantly improving detection accuracy without increasing inference costs.
 
 ## Visualization Results
 
-Partial visualization results on the KITTI dataset:
+Some visualization results on the KITTI dataset:
 
-|                      2D Bounding Box                      |                      3D Bounding Box                      |
+|                         2D Bounding Box                         |                         3D Bounding Box                         |
 | :-------------------------------------------------------: | :-------------------------------------------------------: |
 | <img src="docs/images/2d.png" alt="2D BBox" width="400"/> | <img src="docs/images/3d.png" alt="3D BBox" width="400"/> |
 
-|                    DA3 Depth Pseudo-label                    |                                                          Depth Uncertainty                                                          |
+|                        DA3 Depth Pseudo-Label                        |                                                            Depth Uncertainty                                                             |
 | :----------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------------: |
 | <img src="docs/images/da3.png" alt="DA3 Depth" width="400"/> | <img src="docs/images/unc.png" alt="Uncertainty" width="400"/><br><img src="docs/images/img.png" alt="Original Image" width="400"/> |
 
-|                                                           Object Center Heatmap                                                           |                      LiDAR BEV Projection                      |
+|                                                             Object Center Heatmap                                                              |                         LiDAR BEV Projection                         |
 | :---------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------: |
 | <img src="docs/images/hm.png" alt="Heatmap" width="400"/><br><img src="docs/images/hm_perclass.png" alt="Heatmap Per-class" width="400"/> | <img src="docs/images/lidar.png" alt="LiDAR BEV" width="400"/> |
 
-**Note: The above visualization results correspond to image ID 001230.**
+**Note: The image number corresponding to the above visualization results is 001230.**
 
 ## Experimental Results
 
-We conducted extensive experiments on the KITTI dataset. Below are some core experimental results (for detailed data, please refer to `summary.md` in the repository root):
+We conducted extensive experiments on the KITTI dataset. The following are some core experimental results (for detailed data, please refer to `summary.md` in the root directory of the repository):
 
-### 1. Core Result Comparison (KITTI Validation Set)
+### 1. Core Results Comparison (KITTI Validation Set)
 
 | Method              |  3D@0.7 (Easy/Mod/Hard)   |  BEV@0.7 (Easy/Mod/Hard)  |  3D@0.5 (Easy/Mod/Hard)   |  BEV@0.5 (Easy/Mod/Hard)  |
 | :------------------ | :-----------------------: | :-----------------------: | :-----------------------: | :-----------------------: |
@@ -67,7 +67,7 @@ We conducted extensive experiments on the KITTI dataset. Below are some core exp
 | + DA3             |     ✓     |             |      18.27 / 14.26 / 11.96      |      25.59 / 19.65 / 16.79       |
 | **+ Uncertainty** |   **✓**   |    **✓**    |    **18.49 / 14.48 / 12.14**    |    **26.38 / 20.12 / 17.89**     |
 
-### 3. Model Parameters and FLOPs Comparison
+### 3. Comparison of Model Parameters and Computation
 
 | Model               | Backbone      | FLOPs (G) | Params (M) |
 | :------------------ | :------------ | :-------: | :--------: |
@@ -86,12 +86,43 @@ We conducted extensive experiments on the KITTI dataset. Below are some core exp
 | ConvNeXtV2-Tiny |      17.17 / 13.25 / 11.69      |      24.97 / 19.42 / 16.74       |
 | ResNet-50       |      15.45 / 12.03 / 10.11      |      22.38 / 17.81 / 15.51       |
 
+### 5. Oracle Analysis: Depth Bottleneck and Attribute Decoupling
+
+To deeply explore the bottlenecks of model performance and the coupling relationship between various prediction attributes, we conducted an Oracle analysis. By replacing specific prediction heads (such as depth, size, heading, etc.) with real Ground Truth (GT) values during the inference phase, we observed the 3D AP (R40) performance of the model in different depth intervals.
+
+#### Overall AP_R40 (Moderate) Summary
+
+| Method         | baseline | w/ gt proj. center | w/ gt depth | w/ gt location | w/ gt size_3d | w/ gt heading |
+| :------------- | :------: | :----------------: | :---------: | :------------: | :-----------: | :-----------: |
+| MonoDLE        |  12.09   |       12.10        |    51.92    |     58.20      |     11.97     |     10.60     |
+| MonoDDLE       |  14.26   |       10.09        |    21.91    |     21.79      |     5.24      |     4.91      |
+| **MonoDDLE+U** |  14.51   |       14.08        |  **48.22**  |   **51.95**    |   **13.50**   |   **11.56**   |
+
+#### Key Conclusions
+
+1.  **Depth estimation is the core bottleneck**: When providing real depth information (`w/ gt depth`), the performance of both MonoDLE and MonoDDLE+U skyrocketed (reaching 51.92 and 48.22 respectively). This indicates that as long as the depth estimation is accurate, the existing network heads already possess very strong 3D box regression capabilities.
+2.  **MonoDDLE has severe attribute coupling**: When providing perfect GT size (`w/ gt size_3d`) or heading (`w/ gt heading`), the performance of MonoDDLE plummeted from 14.26 to 5.24 and 4.91 instead. This shows that MonoDDLE generated serious "error compensation" during training, where the model relies on incorrect size or heading to compensate for incorrect depth. Even when providing real depth, its performance only improved to 21.91, far lower than other models.
+3.  **MonoDDLE+U successfully achieved decoupling**: After introducing uncertainty guidance, MonoDDLE+U perfectly solved the above coupling problem. When providing real depth, its performance jumped significantly to 48.22 as expected; when providing real size or heading, it also completely eliminated the precipitous drop phenomenon in MonoDDLE, proving that it broke the pathological coupling between attributes and has a higher performance upper bound.
+
+#### AP Curves Varying with Depth
+
+| Baseline | w/ GT Depth |
+| :---: | :---: |
+| <img src="docs/images/oracle_baseline.png" alt="Oracle Baseline" width="400"/> | <img src="docs/images/oracle_gt_depth.png" alt="Oracle GT Depth" width="400"/> |
+
+| w/ GT Location | w/ GT Proj. Center |
+| :---: | :---: |
+| <img src="docs/images/oracle_gt_location.png" alt="Oracle GT Location" width="400"/> | <img src="docs/images/oracle_gt_proj_center.png" alt="Oracle GT Proj Center" width="400"/> |
+
+| w/ GT Size 3D | w/ GT Heading |
+| :---: | :---: |
+| <img src="docs/images/oracle_gt_size_3d.png" alt="Oracle GT Size 3D" width="400"/> | <img src="docs/images/oracle_gt_heading.png" alt="Oracle GT Heading" width="400"/> |
 
 ## Usage Instructions
 
 ### 1. Environment Installation
 
-Use `uv` to manage the Python environment and dependencies (the project uses the `.venv` directory in the repository by default):
+`uv` manages the Python environment and dependencies (the project uses the `.venv` in the repository by default):
 
 ```bash
 cd #ROOT
@@ -103,13 +134,13 @@ uv pip install -r requirements.txt
 
 ### 2. Data Preparation
 
-Please download the [KITTI Dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d) and organize it as follows:
+Please download the [KITTI dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d) first, and organize it as follows:
 
 ```text
 MonoDDLE
 └── data
     └── KITTI
-        ├── ImageSets         # Split files already provided in the repo
+        ├── ImageSets         # Split files provided by the repository
         ├── training
         │   ├── calib
         │   ├── image_2
@@ -131,17 +162,17 @@ The script to generate DA3 depth data is as follows (ensure `depth_anything_3` i
 python tools/generate_da3_depth.py --data_path data/KITTI --split training
 ```
 
-This script generates two files for each image:
-- **`.npz`**: Contains `depth` (H, W), `intrinsics` (3, 3), and `extrinsics` (3, 4) keys, representing the metric depth map, camera intrinsics, and extrinsics matrices predicted by DA3.
-- **`_vis.jpg`**: A vertical concatenation of the original image and the colorized depth map (for quick quality checks).
+This script will generate two files for each image:
+- **`.npz`**: Contains three keys: `depth` (H, W), `intrinsics` (3, 3), and `extrinsics` (3, 4), which are the metric depth map predicted by DA3, camera intrinsics, and extrinsics matrices, respectively.
+- **`_vis.jpg`**: Visualization of the original image concatenated vertically with the color depth map (for quick quality check of depth).
 
-> Note: Only the `depth` key in the `.npz` file is used during training; `intrinsics` and `extrinsics` are auxiliary information.
+> Note: Only the `depth` key in `.npz` is used during training, `intrinsics` and `extrinsics` are auxiliary information.
 
 ### 3. Training and Evaluation
 
-`tools/train_val.py` parses `dataset.root_dir` relative to the project root, so commands can be executed directly from the repository root.
+`tools/train_val.py` will parse `dataset.root_dir` as relative to the project root directory, so you can execute the command directly in the repository root directory.
 
-#### Single-process DP (Default, DataParallel)
+#### Single Process DP (Default, DataParallel)
 
 ```sh
 cd #ROOT
@@ -149,7 +180,7 @@ cd #ROOT
 python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml
 ```
 
-#### Multi-process DDP (DistributedDataParallel)
+#### Multi-Process DDP (DistributedDataParallel)
 
 ```sh
 cd #ROOT
@@ -157,7 +188,7 @@ cd #ROOT
 bash experiments/scripts/train_ddp.sh experiments/configs/monodle/kitti_da3_uncertainty.yaml
 ```
 
-To run evaluation only:
+Run evaluation only:
 
 ```sh
 python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncertainty.yaml -e
@@ -167,21 +198,23 @@ python tools/train_val.py --config experiments/configs/monodle/kitti_da3_uncerta
 
 #### DA3 Depth Distillation
 
-This project uses [Depth Anything V3](https://github.com/DepthAnything/Depth-Anything-V3) as a teacher model to pre-generate dense metric depth maps as pseudo-labels. These labels are used to provide additional supervision for the detector's depth prediction head through a distillation loss, without changing the backbone structure.
+This project uses [Depth Anything V3](https://github.com/DepthAnything/Depth-Anything-V3) as the teacher model to pre-generate full-image dense metric depth maps as pseudo-labels. Through distillation loss, it provides additional supervision to the depth prediction head of the detector without changing the backbone network structure of the detector.
 
-Before running distillation training, generate the DA3 depth pseudo-labels (see Section 2, Data Preparation):
+Before running depth distillation training, you need to generate DA3 depth pseudo-labels (see Section 2 Data Preparation):
 
 ```bash
 python tools/generate_da3_depth.py --data_path data/KITTI --split training
 ```
 
-The distillation loss is added to the total loss:
+Each `.npz` file contains `depth`, `intrinsics`, and `extrinsics` keys, and a `_vis.jpg` visualization image is generated simultaneously. Only the `depth` key is read during training.
+
+The total distillation loss is:
 
 $$
 L_{total} = L_{cls} + L_{bbox} + L_{dim} + \lambda \cdot L_{distill}
 $$
 
-Where $L_{distill}$ is the L1 or SiLog loss between the predicted depth and DA3 pseudo-labels, and $\lambda$ is the distillation weight. Minimal YAML configuration to enable depth distillation:
+Where $L_{distill}$ is the L1 or SiLog loss between the predicted depth and the DA3 pseudo-label, and $\lambda$ is the distillation weight. The minimum YAML configuration to enable depth distillation is as follows:
 
 ```yaml
 dataset:
@@ -190,13 +223,13 @@ dataset:
 
 #### Uncertainty-Guided Adaptive Distillation
 
-Building upon DA3 depth distillation, we introduce **pixel-wise uncertainty prediction** to adaptively model the confidence in DA3 pseudo-labels. Regions with high uncertainty (e.g., reflective surfaces, occlusion boundaries) automatically receive lower distillation loss weights, mitigating the impact of noisy pseudo-labels:
+Based on DA3 depth distillation, **pixel-wise uncertainty prediction** is further introduced to adaptively model the confidence of the model in DA3 pseudo-labels. Regions with high uncertainty (such as reflective surfaces, occlusion boundaries) will automatically reduce the distillation loss weight, thereby mitigating the negative impact of noisy pseudo-labels:
 
 $$
 L_{distill}^{unc} = \frac{1}{N} \sum_{i} \frac{|d_i - \hat{d}_i|}{\sigma_i} + \log \sigma_i
 $$
 
-Where $\sigma_i$ is the predicted depth uncertainty, $d_i$ is the DA3 pseudo-label, and $\hat{d}_i$ is the predicted depth. To enable uncertainty guidance, set the following in the YAML:
+Where $\sigma_i$ is the depth uncertainty predicted by the model, $d_i$ is the DA3 pseudo-label, and $\hat{d}_i$ is the model predicted depth. Enabling uncertainty guidance only requires setting in YAML:
 
 ```yaml
 dataset:
@@ -211,8 +244,8 @@ distill:
 
 ## Acknowledgements
 
-This project benefits from the excellent implementations of [MonoDLE](https://github.com/XinzhuMa/MonoDLE) and [CenterNet](https://github.com/xingyizhou/CenterNet).
+Excellent implementations of [MonoDLE](https://github.com/XinzhuMa/MonoDLE) and [CenterNet](https://github.com/xingyizhou/CenterNet).
 
 ## License
 
-This project is licensed under the MIT License.
+Open sourced under MIT License.
